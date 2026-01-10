@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #000000;
+  --panel: #0A0A0A;
+  --accent: #2563eb;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg);
+  color: white;
+  font-family: 'Inter', sans-serif;
+  overflow: hidden; /* Evita scrolls dobles raros */
+}

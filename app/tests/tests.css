@@ -1,0 +1,185 @@
+.tests-wrapper {
+    padding: 40px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  
+  .tests-page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 40px;
+  }
+  
+  .breadcrumb {
+    font-size: 10px; /* AQUÍ ESTABA EL ERROR: Cambiado de font-[10px] a font-size: 10px */
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: #3b82f6;
+    margin-bottom: 8px;
+  }
+  
+  .tests-title {
+    font-size: 32px;
+    font-weight: 900;
+    letter-spacing: -0.04em;
+    margin: 0 0 8px 0;
+    text-transform: uppercase;
+  }
+  
+  .tests-subtitle {
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  
+  /* Actions */
+  .header-right-actions {
+    display: flex;
+    gap: 12px;
+  }
+  
+  .run-all-btn {
+    background: white;
+    color: black;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 12px;
+    font-size: 10px;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 20px rgba(255, 255, 255, 0.1);
+  }
+  
+  .run-all-btn:hover {
+    background: #f1f5f9;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 25px rgba(255, 255, 255, 0.15);
+  }
+  
+  .filter-btn {
+    background: transparent;
+    color: #94a3b8;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 10px 16px;
+    border-radius: 12px;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+  }
+  
+  /* Suite Cards (Row Style) */
+  .suites-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .suite-row-card {
+    background: #0A0A0A;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 16px;
+    padding: 20px 28px;
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 40px;
+    align-items: center;
+    transition: all 0.3s ease;
+  }
+  
+  .suite-row-card:hover {
+    background: #0f0f0f;
+    border-color: rgba(59, 130, 246, 0.3);
+    transform: translateX(6px);
+  }
+  
+  .suite-main-info {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+  
+  .status-indicator {
+    width: 4px;
+    height: 32px;
+    border-radius: 10px;
+  }
+  
+  .suite-name {
+    font-size: 14px;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    margin: 0 0 4px 0;
+  }
+  
+  .last-run {
+    font-size: 10px;
+    color: #475569;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  
+  .suite-stats {
+    display: flex;
+    gap: 24px;
+  }
+  
+  .stat-box {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 800;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  
+  /* Status Colors & Tags */
+  .status-passing { background-color: #10b981; color: #10b981; }
+  .status-warning { background-color: #f59e0b; color: #f59e0b; }
+  .status-failing { background-color: #ef4444; color: #ef4444; }
+  
+  .status-tag {
+    font-size: 9px;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 6px 12px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: fit-content;
+    border: 1px solid transparent;
+  }
+  
+  .status-tag.status-passing { background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.2); }
+  .status-tag.status-warning { background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.2); }
+  
+  .suite-action-btn {
+    background: transparent;
+    border: none;
+    color: #334155;
+    cursor: pointer;
+    display: flex;
+    justify-content: flex-end;
+    transition: all 0.2s;
+  }
+  
+  .suite-row-card:hover .suite-action-btn {
+    color: #3b82f6;
+    transform: scale(1.2);
+  }

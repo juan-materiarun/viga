@@ -1,0 +1,70 @@
+/* Tipografía y Resets */
+:root {
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  
+  /* Scrollbar Minimalista (Estilo macOS) */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+  }
+  
+  /* Efecto de Glassmorphism sutil para Cards */
+  .startup-card {
+    background: rgba(255, 255, 255, 0.02);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .startup-card:hover {
+    background: rgba(255, 255, 255, 0.04);
+    transform: translateY(-2px);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+  
+  /* Animación de entrada para las secciones */
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  
+  .animate-in {
+    animation: fadeIn 0.5s ease-out forwards;
+  }
+  
+  /* Eliminar el highlight de los inputs en móviles */
+  input {
+    -webkit-tap-highlight-color: transparent;
+  }
+  
+  /* Reset de navegación para que los Links no tengan subrayado */
+  a {
+    text-decoration: none;
+    color: inherit;
+  }
+  
+  /* Estilo para el logo por si la imagen tarda en cargar */
+  .logo-image {
+    transition: opacity 0.3s ease;
+  }
+  
+  /* Contenedor principal para evitar saltos de layout */
+  .main-wrapper {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+  }
