@@ -5,91 +5,97 @@ import Groq from "groq-sdk";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-export async function executeVigaMission(url) {
+// --- FUNCIÓN 1: EL ARQUITECTO (Solo planea las misiones) ---
+export async function getMissionPlan(url) {
   let browser;
   try {
-    console.log(`🚀 VIGA: Iniciando Mission Control en ${url}`);
+    const isLocal = process.env.NODE_ENV === 'development' || !process.env.VERCEL;
+    browser = await chromium.launch({ headless: true }); // Headless para velocidad en el scan
+    const page = await browser.newPage();
     
-    // Lanzamos navegador visible para ver a los agentes actuar en tu RTX 3050
-    browser = await chromium.launch({ headless: false }); 
-    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const page = await context.newPage();
-
-    // --- FASE 1: RECONOCIMIENTO (SCANNING) ---
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     
-    const domSummary = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('button, a, input, [role="button"]'))
-        .map(el => ({
-          tag: el.tagName,
-          text: (el.innerText || el.placeholder || el.name || '').substring(0, 30),
-          id: el.id,
-          type: el.type || 'interactive'
-        })).slice(0, 20);
+    const pageContext = await page.evaluate(() => {
+      const guideTexts = Array.from(document.querySelectorAll('h1, h2, p, label, span'))
+        .map(el => el.innerText.trim()).filter(t => t.length > 10).slice(0, 10).join(' | ');
+      const elements = Array.from(document.querySelectorAll('button, a, input'))
+        .map(el => ({ tag: el.tagName, text: (el.innerText || el.placeholder || '').substring(0, 30) }))
+        .slice(0, 25);
+      return { guideTexts, elements };
     });
 
-    // --- FASE 2: IA ARQUITECTO (DISEÑO DE MISIONES) ---
     const architectResponse = await groq.chat.completions.create({
       messages: [
-        { role: "system", content: "Sos el Arquitecto de VIGA Mission Control. Analizá los elementos y creá 3 misiones de prueba críticas para el flujo de usuario. Respondé SOLO JSON." },
-        { role: "user", content: `URL: ${url}. Elementos: ${JSON.stringify(domSummary)}. Respondé: {"tests": [{"id": 1, "name": "...", "objective": "..."}]}` }
+        { role: "system", content: "Sos un Senior QA Lead. Generá 3 misiones (happy, negative, edge) en JSON." },
+        { role: "user", content: `Contexto: ${pageContext.guideTexts}. Elementos: ${JSON.stringify(pageContext.elements)}` }
       ],
       model: "llama-3.3-70b-versatile",
       response_format: { type: "json_object" },
     });
 
-    const missionPlan = JSON.parse(architectResponse.choices[0].message.content).tests;
-    const executionResults = [];
+    await browser.close();
+    return { 
+      success: true, 
+      plan: JSON.parse(architectResponse.choices[0].message.content).tests,
+      pageContext // Lo devolvemos para pasárselo al ejecutor
+    };
+  } catch (e) {
+    if (browser) await browser.close();
+    return { success: false, error: e.message };
+  }
+}
 
-    // --- FASE 3: EJECUCIÓN TÁCTICA Y EVIDENCIA ---
-    for (const test of missionPlan) {
-      console.log(`🛠️ Ejecutando Misión: ${test.name}`);
-      
-      const strategy = await groq.chat.completions.create({
-        messages: [
-          { role: "system", content: "Sos el Estratega de VIGA. Decidí qué botón o link cliquear para cumplir el objetivo." },
-          { role: "user", content: `Objetivo: ${test.objective}. Elementos: ${JSON.stringify(domSummary)}. Respondé JSON: {"selector": "texto_exacto_del_elemento"}` }
-        ],
-        model: "llama-3.3-70b-versatile",
-        response_format: { type: "json_object" },
-      });
+// --- FUNCIÓN 2: EL ESTRATEGA (Ejecuta un SOLO test) ---
+export async function executeSingleTest(url, test, pageContext) {
+  let browser;
+  try {
+    const isProd = process.env.NODE_ENV === 'production';
+    
+    // Si estás en Vercel, conectamos a Browserless. Si no, local.
+    if (isProd) {
+      const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN;
+      browser = await chromium.connectOverCDP(`wss://chrome.browserless.io?token=${BROWSERLESS_TOKEN}`);
+    } else {
+      browser = await chromium.launch({ headless: false });
+    }
 
-      const { selector } = JSON.parse(strategy.choices[0].message.content);
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: 'networkidle' });
 
-      let status = "success";
-      let errorSnapshot = null;
+    const strategyResponse = await groq.chat.completions.create({
+      messages: [
+        { role: "system", content: "Sos el Estratega. Decidí la acción (click, type_and_enter, spam_click, back_and_forth)." },
+        { role: "user", content: `Objetivo: ${test.objective}. Elementos: ${JSON.stringify(pageContext.elements)}` }
+      ],
+      model: "llama-3.3-70b-versatile",
+      response_format: { type: "json_object" },
+    });
 
-      try {
-        // Ejecución proactiva
-        await page.click(`text="${selector}"`, { timeout: 5000 });
-        await page.waitForTimeout(2000); 
-      } catch (e) {
-        status = "failed";
-        // CAPTURA DE EVIDENCIA DE ERROR
-        const fileName = `error-${test.id}-${Date.now()}.png`;
-        errorSnapshot = `missions/errors/${fileName}`;
-        await page.screenshot({ path: `public/${errorSnapshot}`, fullPage: true });
+    const strat = JSON.parse(strategyResponse.choices[0].message.content);
+    let status = "success";
+    let errorSnapshot = null;
+
+    try {
+      if (strat.action === "type_and_enter") {
+        await page.fill('input', strat.value || "test@viga.ai");
+        await page.keyboard.press('Enter');
+      } else if (strat.action === "spam_click") {
+        for(let i=0; i<3; i++) await page.click(`text="${strat.selector}"`, { delay: 100 });
+      } else {
+        await page.click(`text="${strat.selector}"`, { timeout: 5000 });
       }
-
-      executionResults.push({
-        id: test.id,
-        title: test.name,
-        status: status,
-        detail: test.objective,
-        evidence: errorSnapshot
-      });
+      await page.waitForTimeout(2000);
+    } catch (e) {
+      status = "failed";
+      const fileName = `error-${Date.now()}.png`;
+      errorSnapshot = `missions/errors/${fileName}`;
+      await page.screenshot({ path: `public/${errorSnapshot}` });
     }
 
     await browser.close();
-
-    return {
-      success: true,
-      rawTests: executionResults
-    };
-
-  } catch (error) {
+    return { ...test, status, evidence: errorSnapshot, decidedValue: strat.value };
+  } catch (e) {
     if (browser) await browser.close();
-    console.error("❌ Misión Abortada:", error);
-    return { success: false, error: error.message };
+    return { ...test, status: "failed", error: e.message };
   }
 }
