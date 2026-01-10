@@ -6,13 +6,9 @@ import {
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { useTheme } from '../contexts/ThemeContext'; 
-import { 
-  getMissionPlan, 
-  executeSingleTest, 
-  createMissionRecord, 
-  saveTestResult, 
-  updateMissionStatus 
-} from '../actions/agents'; 
+
+// --- FIX CRÍTICO: Importación como módulo para evitar "is not a function" ---
+import * as agents from '../actions/agents'; 
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -26,46 +22,76 @@ export default function MissionControlPage() {
   const [savingId, setSavingId] = useState(null); 
   const { theme } = useTheme(); 
 
-  // --- NUEVA LÓGICA DE ESTADÍSTICAS ---
+  // --- LÓGICA DE ESTADÍSTICAS ---
   const stats = useMemo(() => {
-    const total = testCases.filter(t => t.id !== 'scan').length;
-    const passed = testCases.filter(t => t.status === 'success').length;
-    const failed = testCases.filter(t => t.status === 'failed').length;
+    const relevantTests = testCases.filter(t => t.id !== 'scan');
+    const total = relevantTests.length;
+    const passed = relevantTests.filter(t => t.status === 'success').length;
+    const failed = relevantTests.filter(t => t.status === 'failed').length;
     const health = total > 0 ? Math.round((passed / total) * 100) : 0;
     return { total, passed, failed, health };
   }, [testCases]);
 
   const handleStartMission = async () => {
     if (!url) return;
+
+    // Validación de carga del motor
+    if (!agents.createMissionRecord) {
+        console.error("VIGA Engine failed to bind to Client.");
+        alert("Error de sincronización. Por favor, refresca la página.");
+        return;
+    }
+
     setStatus('deploying');
     
+    // Reset de logs con el paso de escaneo inicial
     setTestCases([
       { id: 'scan', title: 'Architect Prime', status: 'running', objective: 'Mapping DOM & assigning specialized units...', agentType: 'standard' }
     ]);
     
     try {
-      const missionId = await createMissionRecord(url);
-      const planResult = await getMissionPlan(url); 
+      // 1. Crear registro en DB
+      const missionId = await agents.createMissionRecord(url);
+      
+      // 2. Obtener plan de la IA
+      const planResult = await agents.getMissionPlan(url); 
       
       if (!planResult.success) {
-        if (missionId) await updateMissionStatus(missionId, 'failed');
+        if (missionId) await agents.updateMissionStatus(missionId, 'failed');
         setStatus('error');
+        setTestCases(prev => prev.map(t => t.id === 'scan' ? { ...t, status: 'failed', objective: `Error: ${planResult.error}` } : t));
         return;
       }
 
+      // 3. Preparar ejecución de tests
       const initialTests = planResult.plan.map((t, idx) => ({ ...t, id: `test-${idx}`, status: 'pending' }));
       setTestCases(initialTests);
 
+      // 4. Ejecución Secuencial
       for (const test of initialTests) {
+        // Marcar test actual como en ejecución
         setTestCases(prev => prev.map(t => t.id === test.id ? { ...t, status: 'running' } : t));
-        const result = await executeSingleTest(url, test, planResult.pageContext);
-        if (missionId) await saveTestResult(missionId, result);
-        setTestCases(prev => prev.map(t => t.id === test.id ? { ...result, id: test.id, status: result.success ? 'success' : 'failed' } : t));
+        
+        // Ejecutar acción en el navegador
+        const result = await agents.executeSingleTest(url, test, planResult.pageContext);
+        
+        // Guardar resultado individual
+        if (missionId) await agents.saveTestResult(missionId, result);
+        
+        // Actualizar UI con el resultado
+        setTestCases(prev => prev.map(t => 
+          t.id === test.id ? { ...result, id: test.id, status: result.status } : t
+        ));
       }
 
-      const finalStatus = stats.failed > 0 ? 'partial_success' : 'success';
-      if (missionId) await updateMissionStatus(missionId, finalStatus);
+      // 5. Finalizar Misión
+      // Calculamos el estado final basado en si hubo fallos
+      const hasFailures = testCases.some(t => t.status === 'failed');
+      const finalStatus = hasFailures ? 'partial_success' : 'success';
+      
+      if (missionId) await agents.updateMissionStatus(missionId, finalStatus);
       setStatus('completed');
+      
     } catch (error) {
       console.error("Mission Control Error:", error);
       setStatus('error');
@@ -94,6 +120,7 @@ export default function MissionControlPage() {
       alert("¡Capturado para análisis permanente!");
     } catch (err) {
       console.error(err);
+      alert("Error al guardar la suite.");
     } finally {
       setSavingId(null);
     }
@@ -111,7 +138,6 @@ export default function MissionControlPage() {
           </h1>
         </div>
 
-        {/* --- NUEVOS CONTADORES VISUALES --- */}
         {testCases.length > 1 && (
           <div className="flex gap-6 items-center bg-white/5 p-4 rounded-3xl border border-white/5">
              <div className="text-center">
@@ -201,7 +227,6 @@ export default function MissionControlPage() {
             <AgentStatus label="A11y Monitor" desc="Compliance" active={testCases.some(t => t.agentType === 'access' && t.status === 'running')} />
           </div>
           
-          {/* --- GRÁFICO DE SALUD TÁCTICO --- */}
           {testCases.length > 1 && (
             <div className="bg-blue-600 p-8 rounded-[32px] text-white space-y-4 shadow-lg shadow-blue-500/20">
               <BarChart3 size={24} />
@@ -256,8 +281,6 @@ function MissionRow({ test, theme, onSave, isSaving }) {
                 {config.label}
               </span>
               <h4 className="text-[11px] font-black uppercase text-white tracking-widest">{test.title}</h4>
-              
-              {/* BADGE DE ESTADO CLARO */}
               {isSuccess && <span className="text-[8px] text-emerald-500 font-black tracking-tighter">[PASSED]</span>}
               {isFailed && <span className="text-[8px] text-red-500 font-black tracking-tighter">[FAILED]</span>}
             </div>
@@ -265,7 +288,6 @@ function MissionRow({ test, theme, onSave, isSaving }) {
           </div>
         </div>
 
-        {/* BOTÓN DE GUARDAR SIEMPRE QUE TERMINE (Éxito o Fallo) */}
         {(isSuccess || isFailed) && (
           <button 
             onClick={onSave}

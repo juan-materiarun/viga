@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   CheckCircle2, Clock, Beaker, X, Code, Play, Trash2, Zap, 
   Loader2, Eye, Bug, Terminal as TerminalIcon, Download, 
-  Layout, ShieldAlert, Activity, ExternalLink, Globe, ChevronRight, Save
+  Layout, ShieldAlert, Activity, ExternalLink, Globe, ChevronRight, Save, AlertTriangle
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -52,16 +52,41 @@ export default function UnifiedTestsPage() {
     }
   }
 
+  // --- RUNNER OPTIMIZADO PARA DETECTAR DÓNDE MUERE ---
   const handleRunSuite = async (suite) => {
+    if (executingSuiteId) return; 
+
     setExecutingSuiteId(suite.id);
-    setExecutionLogs(["🚀 [SYSTEM] Initializing VIGA Master Engine...", `🌐 [BROWSER] Target: ${suite.base_url}`]);
+    setLastReport(null); 
+    setExecutionLogs([
+      "🚀 [SYSTEM] Initializing VIGA Master Engine...", 
+      "🛡️ [MODE] Headless Stealth Mode Active",
+      `🌐 [BROWSER] Target: ${suite.base_url}`
+    ]);
     
+    // Timeout de seguridad: Si en 60 segundos no hay respuesta, abortamos la UI
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => {
+        abortController.abort();
+        setExecutionLogs(prev => [...prev, "❌ [TIMEOUT] The engine is taking too long. Check server logs."]);
+        setExecutingSuiteId(null);
+    }, 60000); 
+
     try {
       const orderedSteps = suite.test_steps?.sort((a, b) => a.step_order - b.step_order);
       
+      // Logs incrementales para feedback visual constante
       const logsTimer = setInterval(() => {
-        setExecutionLogs(prev => [...prev, `⚙️ [EXEC] Running step ${prev.length}...`, `🛡️ [SELF-HEALING] Scanning DOM signatures...`].slice(-5));
-      }, 2500);
+        setExecutionLogs(prev => {
+          const newLogs = [...prev];
+          if (newLogs.length < 15) {
+            const phase = newLogs.length < 8 ? "DOM Mapping" : "IA Analysis";
+            newLogs.push(`⚙️ [${phase}] Processing data stream...`);
+            newLogs.push(`🔍 [UNIT] Assigning specialized agents...`);
+          }
+          return newLogs.slice(-6);
+        });
+      }, 3000);
 
       const response = await fetch('/api/run-viga', {
         method: 'POST',
@@ -70,20 +95,33 @@ export default function UnifiedTestsPage() {
           url: suite.base_url,
           steps: orderedSteps 
         }),
+        signal: abortController.signal
       });
 
+      clearTimeout(timeoutId);
       clearInterval(logsTimer);
+
+      if (!response.ok) {
+        throw new Error(`HTTP Error: ${response.status}`);
+      }
+
       const result = await response.json();
       
       if (result.success) {
-        setExecutionLogs(prev => [...prev, "✅ [SUCCESS] Analysis complete. Generating Master Report..."]);
-        setTimeout(() => setLastReport(result.data), 1000);
+        setExecutionLogs(prev => [...prev, "✅ [SUCCESS] Master Report Generated."]);
+        setTimeout(() => {
+          setLastReport(result.data);
+          setExecutingSuiteId(null);
+        }, 800);
       } else {
-        alert("Error en el Runner: " + result.error);
+        setExecutionLogs(prev => [...prev, `❌ [ENGINE ERROR] ${result.error}`]);
+        alert("El motor falló: " + result.error);
+        setExecutingSuiteId(null);
       }
     } catch (err) {
-      alert("Error de conexión con el motor.");
-    } finally {
+      clearTimeout(timeoutId);
+      const errorMsg = err.name === 'AbortError' ? "Engine Timeout" : err.message;
+      setExecutionLogs(prev => [...prev, `❌ [FATAL] ${errorMsg}`]);
       setExecutingSuiteId(null);
     }
   };
@@ -124,11 +162,12 @@ export default function UnifiedTestsPage() {
       const { error: stepsError } = await supabase.from('test_steps').insert(steps);
       if (stepsError) throw stepsError;
 
-      alert("¡Suite E2E Persistida!");
+      alert("¡Suite E2E Guardada!");
       setActiveTab('suites');
+      fetchData();
     } catch (err) {
       console.error(err);
-      alert("Error al guardar la suite.");
+      alert("Error al guardar.");
     } finally {
       setIsSavingSuite(false);
       setSelectedMission(null);
@@ -136,7 +175,7 @@ export default function UnifiedTestsPage() {
   };
 
   const handleDeleteSuite = async (id) => {
-    if (!confirm("¿Eliminar esta suite permanentemente?")) return;
+    if (!confirm("¿Eliminar suite?")) return;
     const { error } = await supabase.from('test_suites').delete().eq('id', id);
     if (!error) fetchData();
   };
@@ -149,32 +188,33 @@ export default function UnifiedTestsPage() {
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
               <Zap size={20} fill="currentColor" />
             </div>
-            <h1 className="text-3xl font-black tracking-tighter uppercase italic text-slate-900 dark:text-white underline decoration-blue-500 transition-colors">VIGA ENGINE</h1>
+            <h1 className="text-3xl font-black tracking-tighter uppercase italic text-slate-900 dark:text-white transition-colors">VIGA ENGINE</h1>
           </div>
-          <p className="text-slate-500 dark:text-slate-400 font-medium text-sm">Autonomous QA & Self-Healing Regression System</p>
+          <p className="text-slate-500 dark:text-slate-400 font-medium text-sm">Autonomous QA System</p>
         </div>
 
-        <div className="flex bg-white dark:bg-white/5 p-1 rounded-2xl border border-slate-200 dark:border-white/10 shadow-sm w-fit">
-          <button onClick={() => setActiveTab('missions')} className={`px-6 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all ${activeTab === 'missions' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-600'}`}>
-            Mission History
+        <div className="flex bg-white dark:bg-white/5 p-1 rounded-2xl border border-slate-200 dark:border-white/10 shadow-sm">
+          <button onClick={() => setActiveTab('missions')} className={`px-6 py-2.5 rounded-xl text-xs font-bold uppercase transition-all ${activeTab === 'missions' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400'}`}>
+            Missions
           </button>
-          <button onClick={() => setActiveTab('suites')} className={`px-6 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all ${activeTab === 'suites' ? 'bg-emerald-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-600'}`}>
-            E2E Suites
+          <button onClick={() => setActiveTab('suites')} className={`px-6 py-2.5 rounded-xl text-xs font-bold uppercase transition-all ${activeTab === 'suites' ? 'bg-emerald-600 text-white shadow-lg' : 'text-slate-400'}`}>
+            Suites
           </button>
         </div>
       </header>
 
+      {/* TERMINAL DE LOGS */}
       <AnimatePresence>
         {executingSuiteId && (
-          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="mb-8 overflow-hidden">
-            <div className="bg-slate-900 rounded-2xl p-6 font-mono text-sm border border-slate-800 shadow-2xl">
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="mb-8">
+            <div className="bg-slate-900 rounded-2xl p-6 font-mono text-xs border border-slate-800 shadow-2xl">
               <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-3">
-                <TerminalIcon size={16} className="text-blue-400" />
-                <span className="text-slate-500 text-xs font-bold uppercase tracking-widest">Live Execution Trace</span>
+                <TerminalIcon size={14} className="text-blue-400" />
+                <span className="text-slate-500 font-bold uppercase tracking-widest">Engine Live Trace</span>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 {executionLogs.map((log, i) => (
-                  <div key={i} className={log.includes('✅') ? 'text-emerald-400' : 'text-slate-300'}>
+                  <div key={i} className={log.includes('✅') ? 'text-emerald-400' : log.includes('❌') ? 'text-red-400' : 'text-slate-300'}>
                     <span className="text-slate-600 mr-2">[{new Date().toLocaleTimeString()}]</span> {log}
                   </div>
                 ))}
@@ -185,43 +225,43 @@ export default function UnifiedTestsPage() {
       </AnimatePresence>
 
       {loading ? (
-        <div className="py-20 text-center animate-pulse text-slate-400 font-black uppercase text-xs tracking-widest">Syncing Intelligence...</div>
+        <div className="py-20 text-center animate-pulse text-slate-400 font-black uppercase text-xs tracking-widest">Syncing...</div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {activeTab === 'missions' ? (
             missions.map(m => (
-              <div key={m.id} onClick={() => setSelectedMission(m)} className="group bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 p-6 rounded-3xl hover:border-blue-500/50 transition-all cursor-pointer shadow-sm hover:shadow-xl relative overflow-hidden">
-                <div className="flex items-center gap-4 mb-4">
+              <div key={m.id} onClick={() => setSelectedMission(m)} className="group bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 p-6 rounded-3xl hover:border-blue-500/50 transition-all cursor-pointer shadow-sm relative overflow-hidden">
+                <div className="flex items-center gap-4">
                   <div className={`w-3 h-3 rounded-full ${m.status === 'success' ? 'bg-emerald-500' : 'bg-blue-500 animate-pulse'}`} />
-                  <div>
-                    <h3 className="text-sm font-black uppercase tracking-tight text-slate-900 dark:text-white truncate max-w-[180px]">{m.url.replace('https://', '')}</h3>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase">{m.test_results?.length || 0} Traces Captured</p>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-black uppercase text-slate-900 dark:text-white truncate">{m.url.replace('https://', '')}</h3>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase">{m.test_results?.length || 0} Trace Points</p>
                   </div>
+                  <ChevronRight size={18} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
                 </div>
-                <ChevronRight className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-300 group-hover:text-blue-500 group-hover:translate-x-1 transition-all" />
               </div>
             ))
           ) : (
             suites.map(s => (
-              <div key={s.id} className="bg-white dark:bg-white/[0.03] border border-slate-200 dark:border-white/5 p-6 rounded-3xl shadow-sm hover:shadow-lg transition-all group">
+              <div key={s.id} className="bg-white dark:bg-white/[0.03] border border-slate-200 dark:border-white/5 p-6 rounded-3xl shadow-sm transition-all">
                 <div className="flex justify-between items-start mb-6">
-                  <div className="w-12 h-12 bg-emerald-500/10 rounded-2xl flex items-center justify-center text-emerald-500 border border-emerald-500/10">
-                    <Layout size={24} />
+                  <div className="w-10 h-10 bg-emerald-500/10 rounded-xl flex items-center justify-center text-emerald-500">
+                    <Layout size={20} />
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => handleRunSuite(s)} disabled={executingSuiteId === s.id} className="p-3 bg-emerald-600 text-white rounded-xl hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-50">
-                      {executingSuiteId === s.id ? <Loader2 className="animate-spin" size={20}/> : <Play size={20} fill="currentColor"/>}
+                    <button onClick={() => handleRunSuite(s)} disabled={!!executingSuiteId} className="p-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-all disabled:opacity-20">
+                      {executingSuiteId === s.id ? <Loader2 className="animate-spin" size={18}/> : <Play size={18} fill="currentColor"/>}
                     </button>
-                    <button onClick={() => handleDeleteSuite(s.id)} className="p-3 bg-slate-100 dark:bg-white/5 text-slate-400 hover:text-red-500 rounded-xl transition-all">
-                      <Trash2 size={20}/>
+                    <button onClick={() => handleDeleteSuite(s.id)} className="p-2.5 bg-slate-100 dark:bg-white/5 text-slate-400 hover:text-red-500 rounded-lg transition-all">
+                      <Trash2 size={18}/>
                     </button>
                   </div>
                 </div>
-                <h3 className="font-black text-slate-900 dark:text-white uppercase tracking-tighter mb-1 truncate">{s.name}</h3>
-                <p className="text-[10px] text-slate-400 font-bold uppercase truncate opacity-60 mb-4">{s.base_url}</p>
-                <div className="pt-4 border-t border-slate-100 dark:border-white/5 flex items-center justify-between">
+                <h3 className="font-black text-slate-900 dark:text-white uppercase truncate text-sm">{s.name}</h3>
+                <p className="text-[10px] text-slate-400 font-bold truncate mb-4">{s.base_url}</p>
+                <div className="pt-4 border-t border-slate-100 dark:border-white/5">
                   <span className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1">
-                    <Code size={12} /> {s.test_steps?.length || 0} Steps
+                    <Code size={12} /> {s.test_steps?.length || 0} Saved Steps
                   </span>
                 </div>
               </div>
@@ -234,30 +274,30 @@ export default function UnifiedTestsPage() {
       <AnimatePresence>
         {selectedMission && (
           <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedMission(null)} className="fixed inset-0 bg-slate-900/60 dark:bg-black/90 backdrop-blur-md z-40" />
-            <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} className="fixed right-0 top-0 h-full w-full md:w-[550px] bg-white dark:bg-[#0A0A0A] border-l border-slate-200 dark:border-white/10 z-50 p-6 md:p-10 overflow-y-auto shadow-2xl">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedMission(null)} className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-40" />
+            <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} className="fixed right-0 top-0 h-full w-full md:w-[500px] bg-white dark:bg-[#0A0A0A] border-l border-slate-200 dark:border-white/10 z-50 p-6 md:p-10 overflow-y-auto">
               <div className="flex justify-between items-center mb-10">
-                <h2 className="text-xl font-black uppercase text-slate-900 dark:text-white tracking-tighter flex items-center gap-2"><Eye size={20} className="text-blue-500"/> Trace Log</h2>
-                <button onClick={() => setSelectedMission(null)} className="text-slate-400 hover:text-slate-900 dark:hover:text-white"><X /></button>
+                <h2 className="text-xl font-black uppercase text-slate-900 dark:text-white flex items-center gap-2"><Eye size={20} className="text-blue-500"/> Trace Log</h2>
+                <button onClick={() => setSelectedMission(null)} className="text-slate-400 hover:text-slate-900 transition-colors"><X /></button>
               </div>
               <div className="space-y-6 pb-20">
                 {selectedMission.test_results?.map((res, i) => (
                   <div key={i} className="bg-slate-50 dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 rounded-2xl p-5">
                     <div className="flex justify-between items-center mb-2">
-                      <span className="text-[10px] font-black text-blue-500 uppercase italic tracking-widest">Step {i+1}</span>
+                      <span className="text-[10px] font-black text-blue-500 uppercase italic">Step {i+1}</span>
                       <CheckCircle2 size={14} className="text-emerald-500" />
                     </div>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 mb-4 font-medium italic leading-relaxed">"{res.reasoning}"</p>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 mb-4 font-medium italic">"{res.reasoning}"</p>
                     <div className="bg-white dark:bg-black/50 p-4 rounded-xl border border-slate-200 dark:border-white/5 font-mono text-[9px] text-slate-500 overflow-hidden">
-                      <div className="flex items-center gap-2 mb-2 text-blue-500 uppercase font-black"><Code size={12}/> {res.action || 'CLICK'}</div>
+                      <div className="flex items-center gap-2 mb-2 text-blue-500 uppercase font-black"><Code size={12}/> {res.action}</div>
                       <div className="truncate text-slate-700 dark:text-blue-400/80 font-bold">TARGET: {res.title}</div>
-                      <div className="truncate opacity-50 mt-1">SEL: {res.decided_value || res.selector}</div>
+                      <div className="truncate opacity-50 mt-1">SELECTOR: {res.decided_value || res.selector}</div>
                     </div>
                   </div>
                 ))}
-                <button onClick={() => handleSaveToSuite(selectedMission)} disabled={isSavingSuite} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black uppercase text-xs py-5 rounded-2xl shadow-xl flex items-center justify-center gap-3 transition-all disabled:opacity-50 active:scale-95">
+                <button onClick={() => handleSaveToSuite(selectedMission)} disabled={isSavingSuite} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black uppercase text-xs py-5 rounded-2xl shadow-xl flex items-center justify-center gap-3 transition-all disabled:opacity-50">
                   {isSavingSuite ? <Loader2 className="animate-spin" /> : <Save size={18}/>}
-                  {isSavingSuite ? 'Syncing DNA...' : 'Save as Active Suite'}
+                  {isSavingSuite ? 'Syncing...' : 'Convert to Regression Suite'}
                 </button>
               </div>
             </motion.div>
@@ -265,83 +305,73 @@ export default function UnifiedTestsPage() {
         )}
       </AnimatePresence>
 
-      {/* MASTER REPORT DASHBOARD */}
+      {/* REPORTE MASTER FINAL */}
       <AnimatePresence>
         {lastReport && (
           <>
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setLastReport(null)} className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[60]" />
-            <motion.div initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 50, opacity: 0 }} className="fixed inset-4 md:inset-10 bg-white dark:bg-[#08090F] z-[70] rounded-[32px] overflow-hidden flex flex-col shadow-2xl border border-white/10">
-              
-              <div className="p-6 md:p-8 border-b border-slate-100 dark:border-white/5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-slate-50/50 dark:bg-white/[0.02]">
+            <motion.div initial={{ y: 100 }} animate={{ y: 0 }} exit={{ y: 100 }} className="fixed inset-4 md:inset-10 bg-white dark:bg-[#08090F] z-[70] rounded-[32px] overflow-hidden flex flex-col shadow-2xl border border-white/10">
+              <div className="p-6 md:p-8 border-b border-slate-100 dark:border-white/5 flex justify-between items-center bg-slate-50/50 dark:bg-white/[0.02]">
                 <div>
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-emerald-500 p-1.5 rounded-lg text-white"><ShieldAlert size={20}/></div>
-                    <h2 className="text-2xl font-black uppercase tracking-tighter italic text-slate-900 dark:text-white transition-colors">VIGA MASTER ANALYSIS</h2>
-                  </div>
-                  <p className="text-xs text-slate-500 font-bold uppercase flex items-center gap-2">
-                    <Globe size={12}/> {lastReport.url}
-                  </p>
+                  <h2 className="text-2xl font-black uppercase tracking-tighter italic flex items-center gap-3">
+                    <ShieldAlert className="text-emerald-500" /> VIGA ANALYSIS
+                  </h2>
+                  <p className="text-[10px] text-slate-500 font-bold uppercase">{lastReport.url}</p>
                 </div>
-                <div className="flex gap-3 w-full md:w-auto">
-                  <button onClick={downloadReport} className="flex-1 md:flex-none px-6 py-3 bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-2xl text-xs font-black uppercase hover:bg-slate-50 transition-all flex items-center justify-center gap-2">
-                    <Download size={16}/> Export Report
+                <div className="flex gap-2">
+                  <button onClick={downloadReport} className="p-3 bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl text-slate-600 dark:text-white hover:bg-slate-50 transition-all">
+                    <Download size={20}/>
                   </button>
-                  <button onClick={() => setLastReport(null)} className="p-3 bg-slate-900 text-white rounded-2xl hover:bg-slate-800 transition-all">
+                  <button onClick={() => setLastReport(null)} className="p-3 bg-slate-900 text-white rounded-xl">
                     <X size={20}/>
                   </button>
                 </div>
               </div>
 
-              <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
-                {/* Visual Evidence */}
-                <div className="flex-[1.2] p-6 md:p-8 overflow-y-auto bg-slate-100/50 dark:bg-black/20 text-center">
-                  <h4 className="text-[10px] font-black uppercase text-slate-400 mb-4 tracking-widest flex items-center justify-center gap-2 italic">
-                    <Beaker size={14} className="text-blue-500"/> Full Page Trace Evidence
-                  </h4>
-                  <div className="inline-block rounded-[24px] overflow-hidden border-4 border-white dark:border-white/5 shadow-2xl bg-white dark:bg-slate-900 max-w-full">
-                    <img src={lastReport.screenshotPath} className="w-full h-auto object-contain max-h-[70vh]" alt="Screenshot" />
+              <div className="flex-1 overflow-y-auto flex flex-col md:flex-row">
+                <div className="flex-[1.5] p-6 bg-slate-100/50 dark:bg-black/20 flex items-center justify-center border-b md:border-b-0 md:border-r border-slate-200 dark:border-white/5">
+                  <div className="rounded-2xl overflow-hidden shadow-2xl border-4 border-white dark:border-white/5">
+                    {lastReport.screenshotPath ? (
+                       <img src={lastReport.screenshotPath} className="max-w-full h-auto max-h-[65vh] object-contain" alt="Test Result" />
+                    ) : (
+                      <div className="p-20 text-slate-400 font-black uppercase text-xs">No screenshot captured</div>
+                    )}
                   </div>
                 </div>
 
-                {/* Analysis Data */}
-                <div className="flex-1 p-6 md:p-8 overflow-y-auto border-l border-slate-100 dark:border-white/5 bg-white dark:bg-[#080808]">
-                  <div className="space-y-8">
-                    <section>
-                      <h4 className="text-[11px] font-black text-red-500 uppercase tracking-widest mb-4 flex items-center gap-2">
-                        <Bug size={16} /> Critical Anomalies Detected
-                      </h4>
-                      <div className="space-y-4">
-                        {lastReport.vigaMasterReport?.criticalBugs?.length > 0 ? (
-                          lastReport.vigaMasterReport.criticalBugs.map((bug, i) => (
-                            <div key={i} className="p-5 bg-red-50 dark:bg-red-500/5 border border-red-100 dark:border-red-500/20 rounded-2xl">
-                              <p className="text-sm font-black text-red-700 dark:text-red-400 mb-3 uppercase">{bug.reason}</p>
-                              <div className="bg-white/80 dark:bg-black/40 p-3 rounded-xl border border-red-200/50 dark:border-white/5">
-                                <code className="text-[10px] font-mono break-all text-slate-600 dark:text-red-300/70">{bug.selector}</code>
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <div className="text-[10px] text-slate-400 font-bold uppercase italic p-4 border-2 border-dashed border-slate-200 dark:border-white/5 rounded-2xl text-center">
-                            No critical issues identified.
+                <div className="flex-1 p-6 md:p-8 space-y-8 bg-white dark:bg-[#080808]">
+                  <section>
+                    <h4 className="text-[11px] font-black text-red-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                      <Bug size={14} /> Anomalies
+                    </h4>
+                    <div className="space-y-3">
+                      {lastReport.vigaMasterReport?.criticalBugs?.length > 0 ? (
+                        lastReport.vigaMasterReport.criticalBugs.map((bug, i) => (
+                          <div key={i} className="p-4 bg-red-50 dark:bg-red-500/5 border border-red-100 dark:border-red-500/10 rounded-xl">
+                            <p className="text-xs font-black text-red-700 dark:text-red-400 uppercase mb-2">{bug.reason}</p>
+                            <code className="text-[9px] font-mono break-all text-slate-500">{bug.selector}</code>
                           </div>
-                        )}
-                      </div>
-                    </section>
+                        ))
+                      ) : (
+                        <div className="p-4 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-xl text-center text-[10px] font-bold text-slate-400 uppercase italic">
+                          No bugs detected.
+                        </div>
+                      )}
+                    </div>
+                  </section>
 
-                    <section>
-                      <h4 className="text-[11px] font-black text-blue-500 uppercase tracking-widest mb-4">Functional Failures Log</h4>
-                      <div className="space-y-3">
-                        {lastReport.vigaMasterReport?.functionalFailures?.map((fail, i) => (
-                          <div key={i} className="p-4 bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/10 rounded-2xl flex gap-4 items-start">
-                            <div className="w-6 h-6 rounded-lg bg-blue-100 dark:bg-blue-500/20 text-blue-600 flex items-center justify-center shrink-0 mt-1">
-                              <Activity size={14}/>
-                            </div>
-                            <p className="text-xs text-slate-600 dark:text-slate-400 font-medium leading-relaxed">{fail.description}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  </div>
+                  <section>
+                    <h4 className="text-[11px] font-black text-blue-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                      <Activity size={14} /> System Health
+                    </h4>
+                    <div className="space-y-3">
+                      {lastReport.vigaMasterReport?.functionalFailures?.map((fail, i) => (
+                        <div key={i} className="p-4 bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/5 rounded-xl">
+                          <p className="text-xs text-slate-600 dark:text-slate-400 font-medium leading-relaxed">{fail.description}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
                 </div>
               </div>
             </motion.div>
