@@ -1,8 +1,11 @@
-/** @type {import('tailwind.config').Config} */
+/** @type {import('tailwindcss').Config} */
 module.exports = {
+  // ESTA LÍNEA ES EL MOTOR DE TODO. Sin esto, las clases dark: no existen.
+  darkMode: 'class', 
   content: [
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./lib/**/*.{js,ts,jsx,tsx,mdx}", // Agregamos lib por si acaso
   ],
   theme: {
     extend: {

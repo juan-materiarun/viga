@@ -7,22 +7,28 @@ const ThemeContext = createContext();
 export function ThemeProvider({ children }) {
   const [theme, setTheme] = useState('dark');
 
-  // Load theme from localStorage on mount
+  // Carga inicial
   useEffect(() => {
-    const savedTheme = localStorage.getItem('viga-theme');
-    if (savedTheme) {
-      setTheme(savedTheme);
-    }
+    const savedTheme = localStorage.getItem('viga-theme') || 'dark';
+    setTheme(savedTheme);
   }, []);
 
-  // Apply theme to document and save to localStorage
+  // Aplicación del tema
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
+    const root = window.document.documentElement;
+    
+    // Quitamos ambas para no duplicar y agregamos la correcta
+    root.classList.remove('light', 'dark');
+    root.classList.add(theme);
+    
+    // Mantenemos esto por si usas variables CSS manuales
+    root.setAttribute('data-theme', theme);
+    
     localStorage.setItem('viga-theme', theme);
   }, [theme]);
 
   const toggleTheme = () => {
-    setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+    setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
   };
 
   return (
@@ -34,9 +40,6 @@ export function ThemeProvider({ children }) {
 
 export function useTheme() {
   const context = useContext(ThemeContext);
-  if (!context) {
-    throw new Error('useTheme must be used within a ThemeProvider');
-  }
+  if (!context) throw new Error('useTheme must be used within a ThemeProvider');
   return context;
 }
-

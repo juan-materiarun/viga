@@ -2,102 +2,119 @@ import { NextRequest, NextResponse } from 'next/server';
 import { chromium } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export async function POST(request: NextRequest) {
   let browser;
   try {
-    const { url } = await request.json();
+    const { url, steps } = await request.json(); 
     if (!url) return NextResponse.json({ error: 'URL is required' }, { status: 400 });
 
-    // 1. Preparación de Entorno
     const screenshotsDir = path.join(process.cwd(), 'public', 'screenshots');
     if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
     const screenshotFilename = `viga_${Date.now()}.png`;
     const screenshotPath = path.join(screenshotsDir, screenshotFilename);
 
-    // 2. Ejecución de Playwright (The Beast)
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
+    // --- ARGS AGREGADOS PARA FORZAR HEADLESS Y AHORRAR RECURSOS ---
+    browser = await chromium.launch({ 
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',           // Deshabilita aceleración gráfica (evita que se abra la ventana)
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',        // Ahorra RAM
+        '--hide-scrollbars',
+        '--mute-audio'
+      ]
+    });
+
+    const context = await browser.newContext();
+    const page = await context.newPage();
     
     const networkErrors: any[] = [];
     const consoleLogs: any[] = [];
-    const uncaughtExceptions: any[] = [];
 
-    // Listeners técnicos
     page.on('response', res => {
-      if (res.status() >= 400) {
-        networkErrors.push({ url: res.url(), status: res.status(), type: res.request().resourceType() });
-      }
+      if (res.status() >= 400) networkErrors.push({ url: res.url(), status: res.status() });
     });
 
     page.on('console', msg => {
       if (msg.type() === 'error') consoleLogs.push({ text: msg.text() });
     });
 
-    page.on('pageerror', err => {
-      uncaughtExceptions.push({ message: err.message });
-    });
-
     await page.setViewportSize({ width: 1280, height: 800 });
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     
-    // Análisis de Interactividad y Layout (Detección de elementos "muertos")
-    const technicalInventory = await page.evaluate(() => {
-      const all = document.querySelectorAll('button, a, input');
-      const brokenElements = Array.from(all).filter(el => {
-        const rect = el.getBoundingClientRect();
-        return rect.width === 0 || rect.height === 0;
-      }).map(el => ({ tag: el.tagName, id: el.id, issue: 'Zero size / Hidden' }));
+    // Mantenemos el timeout pero cambiamos a networkidle para más estabilidad
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
 
-      return {
-        totalElements: all.length,
-        brokenElements: brokenElements.slice(0, 5)
-      };
-    });
+    // Ejecución de pasos
+    if (steps && Array.isArray(steps)) {
+      for (const step of steps.sort((a, b) => a.step_order - b.step_order)) {
+        try {
+          if (step.action_type === 'type') {
+            await page.fill(step.selector, "VIGA_E2E", { timeout: 8000 });
+          } else {
+            await page.click(step.selector, { timeout: 8000 });
+          }
+        } catch (error) {
+          const healed = await page.evaluate((s) => {
+            const el = Array.from(document.querySelectorAll('button, a, input, span'))
+              .find(e => e.textContent?.trim() === s.expected_result?.trim());
+            if (el) { el.setAttribute('data-viga', 'true'); return '[data-viga="true"]'; }
+            return null;
+          }, step);
+          if (healed) await page.click(healed);
+        }
+        await page.waitForTimeout(1000); 
+      }
+    }
 
-    await page.screenshot({ path: screenshotPath, fullPage: true });
+    await page.screenshot({ path: screenshotPath });
     const title = await page.title();
-    const accessibilityTree = await page.accessibility.snapshot();
-
-    // 3. Consolidación de Evidencia
-    const technicalData = {
-      networkErrors,
-      consoleLogs,
-      uncaughtExceptions,
-      technicalInventory,
-      accessibilityTree: JSON.stringify(accessibilityTree).substring(0, 2000) // Truncar para ahorrar tokens
-    };
-
     await browser.close();
 
-    // 4. IA Master Analysis (Unificamos para evitar 429)
-    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY!);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const imageBase64 = fs.readFileSync(screenshotPath).toString('base64');
+    // ANALISIS CON MODELO DE TEXTO (Llama 3.3 70B)
+    const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          {
+            role: "system",
+            content: "You are the VIGA QA Master. Analyze the technical logs and return ONLY JSON."
+          },
+          {
+            role: "user",
+            content: `Analyze this E2E run for ${url}. 
+            Title: ${title}
+            Network Errors: ${JSON.stringify(networkErrors)}
+            Console Logs: ${JSON.stringify(consoleLogs)}
+            
+            Return JSON:
+            {
+              "criticalBugs": [],
+              "functionalFailures": [],
+              "visualAnomalies": []
+            }`
+          }
+        ],
+        response_format: { type: "json_object" }
+      })
+    });
 
-    const prompt = `
-      System: You are the VIGA QA MASTER ENGINE. 
-      Action: Analyze the technical data and screenshot provided.
-      Role: Act as a Senior QA Automation Engineer.
-      Constraint: Return ONLY JSON. No prose. No advice.
-      
-      Technical Data: ${JSON.stringify(technicalData)}
+    const groqResult = await groqResponse.json();
+    
+    if (!groqResult.choices) {
+        throw new Error("Groq API Error: " + JSON.stringify(groqResult));
+    }
 
-      Response Schema:
-      {
-        "criticalBugs": [{"selector": "string", "reason": "string", "severity": "CRITICAL"}],
-        "functionalFailures": [{"description": "string", "evidence": "string"}],
-        "visualAnomalies": [{"element": "string", "issue": "string"}]
-      }
-    `;
-
-    const result = await model.generateContent([
-      prompt,
-      { inlineData: { mimeType: 'image/png', data: imageBase64 } }
-    ]);
-
-    const report = JSON.parse(result.response.text().replace(/```json|```/g, ''));
+    const report = JSON.parse(groqResult.choices[0].message.content);
 
     return NextResponse.json({
       success: true,

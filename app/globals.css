@@ -3,16 +3,34 @@
 @tailwind utilities;
 
 :root {
-  --bg: #000000;
+  --bg: #030303;
   --panel: #0A0A0A;
   --accent: #2563eb;
 }
 
-body {
+/* Permitimos scroll global por defecto */
+html, body {
   margin: 0;
   padding: 0;
   background-color: var(--bg);
   color: white;
   font-family: 'Inter', sans-serif;
-  overflow: hidden; /* Evita scrolls dobles raros */
+  overflow-x: hidden; /* Solo bloqueamos el ancho para evitar bugs */
+  height: auto; 
+  scroll-behavior: smooth;
+}
+
+/* Custom Scrollbar estilo "Cursor" */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(37, 99, 235, 0.5);
 }
