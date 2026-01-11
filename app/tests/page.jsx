@@ -5,7 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   CheckCircle2, Clock, Beaker, X, Code, Play, Trash2, Zap, 
   Loader2, Eye, Bug, Terminal as TerminalIcon, Download, 
-  Layout, ShieldAlert, Activity, ExternalLink, Globe, ChevronRight, Save, AlertTriangle
+  Layout, ShieldAlert, Activity, ExternalLink, Globe, ChevronRight, Save, 
+  AlertTriangle, AlertCircle, Info
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -25,9 +26,20 @@ export default function UnifiedTestsPage() {
   const [lastReport, setLastReport] = useState(null); 
   const [executionLogs, setExecutionLogs] = useState([]);
 
+  // --- ESTADOS PARA MODALES PERSONALIZADOS (SAAS UI) ---
+  const [notification, setNotification] = useState(null); 
+  const [confirmModal, setConfirmModal] = useState(null); 
+  const [customPrompt, setCustomPrompt] = useState(null); 
+
   useEffect(() => {
     fetchData();
   }, [activeTab]);
+
+  // Sistema de notificaciones tipo Toast
+  const showNotify = (message, type = 'success') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 4000);
+  };
 
   async function fetchData() {
     setLoading(true);
@@ -46,13 +58,12 @@ export default function UnifiedTestsPage() {
         setSuites(data || []);
       }
     } catch (err) {
-      console.error("Error fetching data:", err);
+      showNotify("Error de sincronización con Supabase", "error");
     } finally {
       setLoading(false);
     }
   }
 
-  // --- RUNNER OPTIMIZADO PARA DETECTAR DÓNDE MUERE ---
   const handleRunSuite = async (suite) => {
     if (executingSuiteId) return; 
 
@@ -64,30 +75,17 @@ export default function UnifiedTestsPage() {
       `🌐 [BROWSER] Target: ${suite.base_url}`
     ]);
     
-    // Timeout de seguridad: Si en 60 segundos no hay respuesta, abortamos la UI
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => {
         abortController.abort();
-        setExecutionLogs(prev => [...prev, "❌ [TIMEOUT] The engine is taking too long. Check server logs."]);
+        setExecutionLogs(prev => [...prev, "❌ [TIMEOUT] Engine is not responding."]);
         setExecutingSuiteId(null);
+        showNotify("Error: Tiempo de espera agotado", "error");
     }, 60000); 
 
     try {
       const orderedSteps = suite.test_steps?.sort((a, b) => a.step_order - b.step_order);
       
-      // Logs incrementales para feedback visual constante
-      const logsTimer = setInterval(() => {
-        setExecutionLogs(prev => {
-          const newLogs = [...prev];
-          if (newLogs.length < 15) {
-            const phase = newLogs.length < 8 ? "DOM Mapping" : "IA Analysis";
-            newLogs.push(`⚙️ [${phase}] Processing data stream...`);
-            newLogs.push(`🔍 [UNIT] Assigning specialized agents...`);
-          }
-          return newLogs.slice(-6);
-        });
-      }, 3000);
-
       const response = await fetch('/api/run-viga', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -99,11 +97,8 @@ export default function UnifiedTestsPage() {
       });
 
       clearTimeout(timeoutId);
-      clearInterval(logsTimer);
 
-      if (!response.ok) {
-        throw new Error(`HTTP Error: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
 
       const result = await response.json();
       
@@ -112,16 +107,15 @@ export default function UnifiedTestsPage() {
         setTimeout(() => {
           setLastReport(result.data);
           setExecutingSuiteId(null);
+          showNotify("Prueba finalizada con éxito");
         }, 800);
       } else {
-        setExecutionLogs(prev => [...prev, `❌ [ENGINE ERROR] ${result.error}`]);
-        alert("El motor falló: " + result.error);
+        showNotify(result.error || "Fallo en la ejecución", "error");
         setExecutingSuiteId(null);
       }
     } catch (err) {
       clearTimeout(timeoutId);
-      const errorMsg = err.name === 'AbortError' ? "Engine Timeout" : err.message;
-      setExecutionLogs(prev => [...prev, `❌ [FATAL] ${errorMsg}`]);
+      showNotify("Fallo crítico en el motor", "error");
       setExecutingSuiteId(null);
     }
   };
@@ -134,54 +128,130 @@ export default function UnifiedTestsPage() {
     document.body.appendChild(downloadAnchorNode);
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
+    showNotify("Reporte exportado");
   };
 
-  const handleSaveToSuite = async (mission) => {
-    if (!mission.test_results?.length) return alert("No hay resultados.");
-    setIsSavingSuite(true);
-    const suiteName = prompt("Nombre de la Suite:", `${mission.url.replace('https://', '')} - Regression`);
-    if (!suiteName) { setIsSavingSuite(false); return; }
+  const handleSaveToSuite = (mission) => {
+    if (!mission.test_results?.length) return showNotify("Sin resultados para guardar", "error");
+    
+    setCustomPrompt({
+      title: "Asignar nombre a la Suite",
+      defaultValue: `${mission.url.replace('https://', '')} - Regression`,
+      onConfirm: async (suiteName) => {
+        if (!suiteName) return;
+        setIsSavingSuite(true);
+        try {
+          const { data: suite, error: sError } = await supabase
+            .from('test_suites')
+            .insert([{ name: suiteName, base_url: mission.url }])
+            .select().single();
 
-    try {
-      const { data: suite, error: sError } = await supabase
-        .from('test_suites')
-        .insert([{ name: suiteName, base_url: mission.url }])
-        .select().single();
+          if (sError) throw sError;
 
-      if (sError) throw sError;
+          const steps = mission.test_results.map((res, index) => ({
+            suite_id: suite.id,
+            action_type: res.action || 'click',
+            selector: res.decided_value || res.selector,
+            dna_html: res.dna?.fullHtml || res.html_context || null,
+            step_order: index,
+            expected_result: res.title || res.objective || "Action Element"
+          }));
 
-      const steps = mission.test_results.map((res, index) => ({
-        suite_id: suite.id,
-        action_type: res.action || 'click',
-        selector: res.decided_value || res.selector,
-        dna_html: res.dna?.fullHtml || res.html_context || null,
-        step_order: index,
-        expected_result: res.title || res.objective || "Action Element"
-      }));
+          const { error: stepsError } = await supabase.from('test_steps').insert(steps);
+          if (stepsError) throw stepsError;
 
-      const { error: stepsError } = await supabase.from('test_steps').insert(steps);
-      if (stepsError) throw stepsError;
-
-      alert("¡Suite E2E Guardada!");
-      setActiveTab('suites');
-      fetchData();
-    } catch (err) {
-      console.error(err);
-      alert("Error al guardar.");
-    } finally {
-      setIsSavingSuite(false);
-      setSelectedMission(null);
-    }
+          showNotify("Suite Regression Creada");
+          setActiveTab('suites');
+          fetchData();
+        } catch (err) {
+          showNotify("Error al guardar en base de datos", "error");
+        } finally {
+          setIsSavingSuite(false);
+          setSelectedMission(null);
+          setCustomPrompt(null);
+        }
+      }
+    });
   };
 
-  const handleDeleteSuite = async (id) => {
-    if (!confirm("¿Eliminar suite?")) return;
-    const { error } = await supabase.from('test_suites').delete().eq('id', id);
-    if (!error) fetchData();
+  const handleDeleteSuite = (id) => {
+    setConfirmModal({
+      title: "¿Estás seguro de eliminar esta Suite?",
+      onConfirm: async () => {
+        const { error } = await supabase.from('test_suites').delete().eq('id', id);
+        if (!error) {
+          showNotify("Suite eliminada satisfactoriamente");
+          fetchData();
+        } else {
+          showNotify("Error al eliminar", "error");
+        }
+        setConfirmModal(null);
+      }
+    });
   };
 
   return (
-    <div className="p-6 md:p-10 max-w-7xl mx-auto pb-40 min-h-screen bg-[#F8FAFC] dark:bg-[#020617] transition-colors duration-500">
+    <div className="p-6 md:p-10 max-w-7xl mx-auto pb-40 min-h-screen bg-[#F8FAFC] dark:bg-[#030303] transition-colors duration-500">
+      
+      {/* --- TOAST NOTIFICATIONS --- */}
+      <AnimatePresence>
+        {notification && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+            className="fixed top-10 left-1/2 -translate-x-1/2 z-[200] pointer-events-none"
+          >
+            <div className={`px-6 py-3 rounded-2xl shadow-2xl border flex items-center gap-3 backdrop-blur-xl ${
+              notification.type === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500'
+            }`}>
+              {notification.type === 'error' ? <AlertCircle size={18}/> : <CheckCircle2 size={18}/>}
+              <span className="text-xs font-black uppercase tracking-widest">{notification.message}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* --- MODAL CONFIRMACIÓN --- */}
+      <AnimatePresence>
+        {confirmModal && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-6">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setConfirmModal(null)} className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm" />
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative bg-white dark:bg-[#0A0A0A] border border-slate-200 dark:border-white/10 p-8 rounded-[32px] max-w-sm w-full shadow-2xl text-center">
+              <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center text-red-500 mx-auto mb-6">
+                <AlertTriangle size={32} />
+              </div>
+              <h3 className="text-sm font-black uppercase tracking-tight text-slate-900 dark:text-white mb-8">{confirmModal.title}</h3>
+              <div className="flex gap-3">
+                <button onClick={() => setConfirmModal(null)} className="flex-1 px-6 py-4 rounded-2xl text-[10px] font-black uppercase text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 transition-all">Cancelar</button>
+                <button onClick={confirmModal.onConfirm} className="flex-1 bg-red-600 text-white px-6 py-4 rounded-2xl text-[10px] font-black uppercase shadow-lg shadow-red-500/20">Eliminar</button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* --- MODAL PROMPT (INPUT) --- */}
+      <AnimatePresence>
+        {customPrompt && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-6">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setCustomPrompt(null)} className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm" />
+            <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 20, opacity: 0 }} className="relative bg-white dark:bg-[#0A0A0A] border border-slate-200 dark:border-white/10 p-8 rounded-[32px] max-w-md w-full shadow-2xl">
+              <h3 className="text-xs font-black uppercase tracking-widest text-blue-500 mb-6 italic">{customPrompt.title}</h3>
+              <input 
+                autoFocus
+                id="prompt-input-suite"
+                defaultValue={customPrompt.defaultValue}
+                className="w-full bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-4 text-xs font-bold text-slate-900 dark:text-white outline-none focus:border-blue-500 mb-8"
+                onKeyDown={(e) => e.key === 'Enter' && customPrompt.onConfirm(e.target.value)}
+              />
+              <div className="flex gap-3">
+                <button onClick={() => setCustomPrompt(null)} className="flex-1 px-6 py-4 rounded-2xl text-[10px] font-black uppercase text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 transition-all">Descartar</button>
+                <button onClick={() => customPrompt.onConfirm(document.getElementById('prompt-input-suite').value)} className="flex-[2] bg-blue-600 text-white px-6 py-4 rounded-2xl text-[10px] font-black uppercase shadow-xl shadow-blue-500/20">Guardar Suite</button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       <header className="mb-12 flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
           <div className="flex items-center gap-2 mb-2">

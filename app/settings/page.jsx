@@ -11,7 +11,7 @@ import {
   Shield
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase.js';
-import { useAuth } from '../layout';
+import { useAuth } from '../contexts/AuthContext'; // BIEN: Importar del contexto directamente
 import { motion } from 'framer-motion';
 
 export default function SettingsPage() {
