@@ -163,7 +163,7 @@ export async function executeSingleTest(url, test, pageContext) {
       ...test, 
       status: "success", 
       reasoning: strat.thinking, 
-      decidedValue: strat.value || strat.selector,s
+      decidedValue: strat.value || strat.selector,
       dna: capturedDNA,
       actionTaken: strat,
       success: true
