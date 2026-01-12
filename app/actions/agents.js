@@ -22,7 +22,6 @@ const getSystemPrompt = (type, mode, goal) => {
 // --- UTILIDADES DE ESTADO Y EVIDENCIA ---
 
 async function getWebSnapshot(page) {
-  console.log(`[DEBUG] 📸 Capturando Snapshot del DOM...`);
   return await page.evaluate(() => {
     return {
       url: window.location.href,
@@ -33,34 +32,44 @@ async function getWebSnapshot(page) {
 }
 
 async function uploadEvidenteToStorage(page, suiteId, stepName) {
-  console.log(`[DEBUG] 📷 Intentando captura de pantalla: ${stepName}`);
   try {
     const buffer = await page.screenshot({ fullPage: false });
-    console.log(`[DEBUG] ✅ Screenshot capturado (${buffer.length} bytes). Subiendo a Supabase...`);
-
     const fileName = `${suiteId}/${Date.now()}-${stepName.replace(/\s+/g, '_')}.png`;
 
     const { data, error } = await supabase.storage
       .from('viga-evidence')
       .upload(fileName, buffer, { contentType: 'image/png' });
 
-    if (error) {
-      console.error(`[DEBUG] ❌ Error en Supabase Storage:`, error.message);
-      throw error;
-    }
+    if (error) throw error;
 
     const { data: publicUrl } = supabase.storage.from('viga-evidence').getPublicUrl(fileName);
-    console.log(`[DEBUG] 🔗 URL de evidencia lista: ${publicUrl.publicUrl}`);
     return publicUrl.publicUrl;
   } catch (err) {
-    console.error("[DEBUG] 💥 Fallo crítico en uploadEvidenteToStorage:", err.message);
+    console.error("[DEBUG] 💥 Fallo en evidencia:", err.message);
     return null;
   }
 }
 
+// --- REPORTE (Sincronizado con tus columnas) ---
+async function reportStep(suiteId, name, action, status, agent, screenshotUrl = null) {
+  const { error } = await supabase
+    .from('test_steps')
+    .insert([{
+      suite_id: suiteId,
+      action_type: agent,
+      selector: name,
+      expected_result: action,
+      status: status,
+      screenshot_url: screenshotUrl,
+      error_message: status === 'failed' ? action : null
+    }]);
+
+  if (error) console.error("🚨 Error real en insert:", error.message);
+}
+
 // --- FASE 1: SCOUT ---
 async function runScoutMapping(page, suiteId) {
-  console.log(`[DEBUG] 🛰️ Iniciando fase SCOUT en: ${page.url()}`);
+  console.log(`[DEBUG] 🛰️ Mapeando superficie...`);
   
   const elements = await page.evaluate(() => {
     const interactive = 'a, button, input, [role="button"], .theme-toggle, .mode-toggle, select, textarea';
@@ -83,8 +92,6 @@ async function runScoutMapping(page, suiteId) {
       });
   });
 
-  console.log(`[DEBUG] 📝 Mapeo listo. Insertando ${elements.length} elementos en DB...`);
-
   if (elements.length > 0) {
     const rows = elements.map(el => ({
       suite_id: suiteId,
@@ -95,8 +102,7 @@ async function runScoutMapping(page, suiteId) {
       text: el.text,
       area: el.area
     }));
-    const { error } = await supabase.from('discovered_elements').insert(rows);
-    if (error) console.error(`[DEBUG] ❌ Error insertando elementos:`, error.message);
+    await supabase.from('discovered_elements').insert(rows);
   }
 
   await reportStep(suiteId, "SISTEMA 🛰️", `¡Mapeo listo! Encontré ${elements.length} puntos de interés.`, 'success', 'system');
@@ -105,41 +111,31 @@ async function runScoutMapping(page, suiteId) {
 
 // --- FASE 2: ESTRATEGA ---
 async function generateTargetedPlan(suiteId, goal, apiKey) {
-  console.log(`[DEBUG] 🧠 Estratega planificando objetivo: ${goal}`);
   const { data: elements } = await supabase.from('discovered_elements').select('*').eq('suite_id', suiteId);
-  
-  if (!elements?.length) {
-    console.log(`[DEBUG] ⚠️ No se encontraron elementos para planificar.`);
-    return { selectedIds: [], keywords: [] };
-  }
+  if (!elements?.length) return { selectedIds: [], keywords: [] };
 
   const systemPrompt = `Eres el Estratega VIGA. Selecciona los IDs que ayuden a: "${goal}". Responde JSON: {"selectedIds": [number], "keywords": ["string"]}`;
   
   try {
     const plan = await callAI({ systemPrompt, userContent: JSON.stringify(elements.slice(0, 60)), apiKey });
-    console.log(`[DEBUG] ✅ Plan generado por IA: Seleccionados ${plan.selectedIds?.length} elementos.`);
-    
     if (plan.selectedIds?.length > 0) {
       await supabase.from('discovered_elements').update({ priority: true }).in('id', plan.selectedIds);
     }
     return plan;
   } catch (e) {
-    console.error(`[DEBUG] ❌ Error en Estratega:`, e.message);
     return { selectedIds: [], keywords: [] };
   }
 }
 
-// --- FASE 3: ENJAMBRE ---
+// --- FASE 3: ENJAMBRE (CON BLOQUEO Y LIMPIEZA) ---
 async function startAgent(type, page, suiteId, mode, goal, keywords, apiKey) {
-  console.log(`[DEBUG] 🤖 Agente ${type.toUpperCase()} desplegado.`);
   let actionsCount = 0;
   let missionAccomplished = false;
   const maxActions = mode === 'strike' ? 6 : 10;
 
   while (actionsCount < maxActions) {
-    console.log(`[DEBUG] [${type}] 🔍 Buscando siguiente elemento (Acción ${actionsCount + 1}/${maxActions})...`);
-    
-    const { data: element, error: dbErr } = await supabase.from('discovered_elements')
+    // 1. BLOQUEO ATÓMICO: Buscamos uno pendiente y lo marcamos como 'testing' inmediatamente
+    const { data: element } = await supabase.from('discovered_elements')
       .select('*')
       .eq('suite_id', suiteId)
       .eq('status', 'pending')
@@ -147,35 +143,25 @@ async function startAgent(type, page, suiteId, mode, goal, keywords, apiKey) {
       .limit(1)
       .maybeSingle();
 
-    if (dbErr) console.error(`[DEBUG] [${type}] ❌ Error DB:`, dbErr.message);
-    if (!element) {
-      console.log(`[DEBUG] [${type}] ⏹️ No hay más elementos pendientes.`);
-      break;
-    }
+    if (!element) break;
 
-    console.log(`[DEBUG] [${type}] 🎯 Analizando elemento: ${element.selector} ("${element.text}")`);
-    await supabase.from('discovered_elements').update({ status: 'tested' }).eq('id', element.id);
+    // Marcamos como 'testing' para que el otro agente no lo elija
+    await supabase.from('discovered_elements').update({ status: 'testing' }).eq('id', element.id);
 
     try {
-      console.log(`[DEBUG] [${type}] 🧠 Consultando IA para decidir acción...`);
+      // Usamos el 70b para DECIDIR (inteligencia pesada)
       const decision = await callAI({
         systemPrompt: getSystemPrompt(type, mode, goal),
         userContent: `ELEMENTO: ${JSON.stringify(element)}\nOBJETIVO: ${goal}`,
-        apiKey
+        apiKey,
+        model: "llama-3.3-70b-versatile"
       });
-      console.log(`[DEBUG] [${type}] 🤖 IA decidió: ${decision.action}. Razón: ${decision.reason}`);
 
-      if (decision.action === 'none') {
-        await reportStep(suiteId, `Análisis ${type.toUpperCase()} 🔍`, `Paso de largo: ${decision.reason}`, 'success', type);
-      } else {
-        await reportStep(suiteId, `Buscando... 🔎`, `¡Encontré algo prometedor! Probando: ${element.text || element.selector}`, 'success', type);
-        
-        // 📸 FOTO ANTES
+      if (decision.action !== 'none') {
+        // Ejecutar acción
         const preScreenshot = await uploadEvidenteToStorage(page, suiteId, `PRE_${type}_A${actionsCount}`);
         const preState = await getWebSnapshot(page);
 
-        // ⚡ EJECUTAR
-        console.log(`[DEBUG] [${type}] ⚡ Ejecutando ${decision.action} en navegador...`);
         if (decision.action === 'type' || element.tag_name === 'INPUT') {
           await page.fill(element.selector, "VIGA_STRIKE_DATA");
         } else {
@@ -183,35 +169,43 @@ async function startAgent(type, page, suiteId, mode, goal, keywords, apiKey) {
           await page.click(element.selector, { timeout: 5000 });
         }
         
-        console.log(`[DEBUG] [${type}] ⏳ Esperando 2s para ver cambios...`);
         await page.waitForTimeout(2000); 
 
-        // 📸 FOTO DESPUÉS
         const postScreenshot = await uploadEvidenteToStorage(page, suiteId, `POST_${type}_A${actionsCount}`);
         const postState = await getWebSnapshot(page);
 
-        // 🧠 COMPARACIÓN POR IA
-        console.log(`[DEBUG] [${type}] 🧠 Solicitando validación de cambios a IA...`);
+        // OPTIMIZACIÓN: Usamos 8b para VALIDAR (más rápido, menos rate limit)
         const validation = await callAI({
-          systemPrompt: `Eres un Auditor de QA. Tu objetivo: "${goal}". Compara los estados. ¿Se logró o avanzamos? Responde JSON: {"accomplished": boolean, "reason": "string"}`,
+          systemPrompt: `Eres Auditor QA. Objetivo: "${goal}". Responde JSON: {"accomplished": boolean, "reason": "string"}`,
           userContent: `ANTERIOR: ${JSON.stringify(preState)}\nACTUAL: ${JSON.stringify(postState)}`,
-          apiKey
+          apiKey,
+          model: "llama-3.1-8b-instant"
         });
 
-        const emojiSuccess = validation.accomplished ? "✅" : "⚠️";
-        await reportStep(suiteId, `${decision.caseTitle} ${emojiSuccess}`, validation.reason, validation.accomplished ? 'success' : 'warning', type, postScreenshot);
+        const emoji = validation.accomplished ? "✅" : "⚠️";
+        await reportStep(suiteId, `${decision.caseTitle} ${emoji}`, validation.reason, validation.accomplished ? 'success' : 'warning', type, postScreenshot);
 
         if (mode === 'strike' && (decision.finished || validation.accomplished)) {
-          console.log(`[DEBUG] [${type}] 🎯 ¡MISIÓN CUMPLIDA!`);
           await reportStep(suiteId, "🎯 ¡OBJETIVO LOGRADO!", `¡Misión cumplida! La IA confirma que ${goal} funciona OK. 🚀`, 'success', type, postScreenshot);
           missionAccomplished = true;
           break;
         }
       }
+
+      // Finalizar elemento
+      await supabase.from('discovered_elements').update({ status: 'tested' }).eq('id', element.id);
+
     } catch (err) {
-      console.error(`[DEBUG] [${type}] 💥 Error en ejecución:`, err.message);
+      // MANEJO HUMANO DE ERRORES (GROQ RATE LIMIT)
+      const isRateLimit = err.message.includes('429') || err.message.includes('rate_limit');
+      const userMessage = isRateLimit 
+        ? "⚠️ Sensores saturados: El agente está esperando una ventana de cómputo para reintentar..." 
+        : `Interferencia en el proceso: ${err.message}`;
+
       const errorImg = await uploadEvidenteToStorage(page, suiteId, `ERROR_${type}`);
-      await reportStep(suiteId, `¡Ups! Falló algo 💥`, err.message, 'failed', type, errorImg);
+      await reportStep(suiteId, `¡Ups! Falló algo 💥`, userMessage, 'failed', type, errorImg);
+      
+      if (isRateLimit) await new Promise(r => setTimeout(r, 5000)); // Pausa de seguridad
     }
     actionsCount++;
   }
@@ -220,56 +214,34 @@ async function startAgent(type, page, suiteId, mode, goal, keywords, apiKey) {
 
 // --- FASE 4: AUDITORÍA ---
 async function generateFinalAudit(suiteId) {
-  console.log(`[DEBUG] 📋 Generando Auditoría Final...`);
-  const { data: runData } = await supabase.from('test_suites').select('report_data').eq('id', suiteId).maybeSingle();
-  const history = runData?.report_data?.history || [];
-
+  const { data: steps } = await supabase.from('test_steps').select('*').eq('suite_id', suiteId).order('created_at', { ascending: true });
+  
   try {
     const client = new Groq({ apiKey: process.env.GROQ_API_KEY });
     const response = await client.chat.completions.create({
-      messages: [{ role: "system", content: "Resume la misión de QA de forma técnica y breve." }, { role: "user", content: JSON.stringify(history.slice(-15)) }],
+      messages: [{ role: "system", content: "Genera un resumen ejecutivo muy breve del testing realizado." }, { role: "user", content: JSON.stringify(steps?.slice(-10)) }],
       model: "llama-3.1-8b-instant",
     });
     
     await supabase.from('test_suites').update({ 
       status: 'completed', 
-      report_data: { final_audit: response.choices[0].message.content, history } 
+      report_data: { final_audit: response.choices[0].message.content } 
     }).eq('id', suiteId);
-    console.log(`[DEBUG] ✅ Auditoría guardada. Suite completada.`);
   } catch (e) {
-    console.error(`[DEBUG] ❌ Error en auditoría:`, e.message);
     await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
   }
 }
 
 // --- UTILIDADES ---
-async function callAI({ systemPrompt, userContent, apiKey }) {
+async function callAI({ systemPrompt, userContent, apiKey, model = "llama-3.3-70b-versatile" }) {
   const client = new Groq({ apiKey: apiKey || process.env.GROQ_API_KEY });
   const response = await client.chat.completions.create({
     messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userContent }],
-    model: "llama-3.3-70b-versatile",
+    model: model,
     response_format: { type: "json_object" },
     temperature: 0,
   });
   return JSON.parse(response.choices[0].message.content);
-}
-
-async function reportStep(suiteId, name, action, status, agent, screenshotUrl = null) {
-  console.log(`[REPORT] [${agent.toUpperCase()}] ${name} | ${status}`);
-  
-  const { error } = await supabase
-    .from('test_steps')
-    .insert([{
-      suite_id: suiteId,
-      action_type: agent,          // Mapeamos 'ux/system' aquí
-      selector: name,              // El título o selector
-      expected_result: action,      // La descripción de lo que hace
-      status: status,              // 'success', 'failed', etc.
-      screenshot_url: screenshotUrl,
-      error_message: status === 'failed' ? action : null
-    }]);
-
-  if (error) console.error("🚨 Error real en insert:", error.message);
 }
 
 // --- ORQUESTADOR ---
@@ -278,14 +250,11 @@ export async function runChaosEvolution(url, suiteId, config = {}) {
   let browser = null;
 
   try {
-    console.log(`[DEBUG] 🚀 Lanzando Navegador (Chromium)...`);
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext();
     const page = await context.newPage();
     
     await reportStep(suiteId, "SISTEMA 🛠️", "Iniciando motores... Navegador listo.", 'success', 'system');
-    
-    console.log(`[DEBUG] 🌐 Navegando a: ${url}`);
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
 
     await runScoutMapping(page, suiteId);
@@ -297,7 +266,7 @@ export async function runChaosEvolution(url, suiteId, config = {}) {
       keywords = plan.keywords || [];
     }
 
-    console.log(`[DEBUG] 🔥 Iniciando agentes en paralelo...`);
+    // EJECUCIÓN PARALELA
     const agents = [
       startAgent('ux', page, suiteId, mode, goal, keywords, apiKeys[0]),
       startAgent('functional', page, suiteId, mode, goal, keywords, apiKeys[1] || apiKeys[0])
@@ -314,13 +283,9 @@ export async function runChaosEvolution(url, suiteId, config = {}) {
     await generateFinalAudit(suiteId);
 
   } catch (e) {
-    console.error(`[DEBUG] 💥 ERROR CRÍTICO EN ORQUESTADOR:`, e.message);
     await reportStep(suiteId, "ERROR CRÍTICO 💥", e.message, 'failed', 'system');
     await supabase.from('test_suites').update({ status: 'error' }).eq('id', suiteId);
   } finally {
-    if (browser) {
-      console.log(`[DEBUG] 🔌 Cerrando Navegador.`);
-      await browser.close();
-    }
+    if (browser) await browser.close();
   }
 }
