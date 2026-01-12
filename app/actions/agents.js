@@ -1,225 +1,248 @@
 'use server';
 
 import { chromium } from 'playwright';
-import Groq from "groq-sdk";
+import Groq from 'groq-sdk';
+import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
+
+/* ------------------ CLIENTES ------------------ */
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// --- PROMPTS ---
-const getSystemPrompt = (type, mode, goal) => {
-  return `Eres un AGENTE DE PRUEBAS especializado en ${type.toUpperCase()}. 
-  OBJETIVO ACTUAL: "${goal}".
-  Si el elemento es un input o buscador, USA 'type'. Si es un botón clave, USA 'click'.
-  RESPUESTA JSON ESTRICTA: {"caseTitle": "string", "action": "click|type|none", "reason": "string", "finished": boolean}`;
-};
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
-// --- UTILIDADES ---
-async function getWebSnapshot(page) {
-  return await page.evaluate(() => ({
-    url: window.location.href,
-    text: document.body.innerText.substring(0, 1000),
-  }));
+/* ------------------ UTILIDADES ------------------ */
+
+async function stableScreenshot(page) {
+  await page.waitForLoadState('domcontentloaded');
+  await page.waitForTimeout(600);
+  return page.screenshot({ type: 'jpeg', quality: 80 });
 }
 
-async function uploadEvidenteToStorage(page, suiteId, stepName) {
+async function uploadEvidence(page, suiteId, step) {
   try {
-    const buffer = await page.screenshot({ fullPage: false });
-    const fileName = `${suiteId}/${Date.now()}-${stepName.replace(/\s+/g, '_')}.png`;
-    const { error } = await supabase.storage.from('viga-evidence').upload(fileName, buffer, { contentType: 'image/png' });
-    if (error) throw error;
-    const { data: publicUrl } = supabase.storage.from('viga-evidence').getPublicUrl(fileName);
-    return publicUrl.publicUrl;
-  } catch (err) { return null; }
-}
+    const buffer = await stableScreenshot(page);
+    const path = `${suiteId}/${Date.now()}-${step}.jpg`;
 
-async function reportStep(suiteId, name, action, status, agent, screenshotUrl = null) {
-  await supabase.from('test_steps').insert([{
-    suite_id: suiteId,
-    action_type: agent,
-    selector: name,
-    expected_result: action,
-    status: status,
-    screenshot_url: screenshotUrl,
-    error_message: status === 'failed' ? action : null
-  }]);
-}
+    await supabase.storage
+      .from('viga-evidence')
+      .upload(path, buffer, { contentType: 'image/jpeg' });
 
-// --- FASE 1: SCOUT (DEEP SCAN) ---
-async function runScoutMapping(page, suiteId) {
-  await page.mouse.wheel(0, 500);
-  await page.waitForTimeout(1000);
-  await page.mouse.wheel(0, -500);
-  await page.waitForTimeout(2000);
+    const { data } = supabase.storage
+      .from('viga-evidence')
+      .getPublicUrl(path);
 
-  const elements = await page.evaluate(() => {
-    const interactive = 'a, button, input, [role="button"], select, textarea, [type="search"], .nav-search-input';
-    return Array.from(document.querySelectorAll(interactive))
-      .filter(el => {
-        const r = el.getBoundingClientRect();
-        return r.height > 0 && r.width > 0 && window.getComputedStyle(el).display !== 'none';
-      })
-      .map((el, index) => ({
-        selector: el.id ? `#${el.id}` : 
-                  el.getAttribute('name') ? `${el.tagName.toLowerCase()}[name="${el.getAttribute('name')}"]` :
-                  el.tagName.toLowerCase() + (el.className ? '.' + el.className.trim().split(/\s+/)[0] : ''),
-        text: (el.innerText || el.getAttribute('aria-label') || el.placeholder || el.value || 'Elemento').trim().substring(0, 50),
-        tag_name: el.tagName,
-        area: el.closest('header') || el.closest('nav') ? 'header' : 'main',
-        index: index
-      }));
-  });
-
-  if (elements.length > 0) {
-    await supabase.from('discovered_elements').delete().eq('suite_id', suiteId);
-    await supabase.from('discovered_elements').insert(elements.map(el => ({
-      suite_id: suiteId, selector: el.selector, tag_name: el.tag_name,
-      status: 'pending', priority: false, text: el.text, area: el.area, step_order: el.index
-    })));
+    return data.publicUrl;
+  } catch {
+    return null;
   }
-  await reportStep(suiteId, "SISTEMA 🛰️", `Encontrados ${elements.length} elementos.`, 'success', 'system');
 }
 
-// --- FASE 2: ESTRATEGA ---
-async function generateTargetedPlan(suiteId, goal, apiKey) {
-  const { data: elements } = await supabase.from('discovered_elements').select('*').eq('suite_id', suiteId);
-  if (!elements?.length) return;
+async function reportStep(
+  suiteId,
+  title,
+  description,
+  status,
+  agent,
+  screenshot = null
+) {
+  console.log(`[LOG-STEP] ${status.toUpperCase()} | ${title}`);
 
-  // Priorización manual antes de la IA para asegurar que el buscador entre en los 80 permitidos
-  const prioritized = elements.sort((a, b) => {
-    const k = ['search', 'buscar', 'input', 'q'];
-    const score = (el) => k.reduce((s, word) => s + (el.selector.toLowerCase().includes(word) ? 10 : 0), 0);
-    return score(b) - score(a);
-  }).slice(0, 80);
-
-  const systemPrompt = `Eres el GENERAL DE ESTRATEGIA. Objetivo: "${goal}". 
-  Responde JSON con los IDs de elementos para atacar: {"selectedIds": [number]}`;
-
-  try {
-    const plan = await callAI({ systemPrompt, userContent: JSON.stringify(prioritized), apiKey });
-    if (plan.selectedIds?.length > 0) {
-      await supabase.from('discovered_elements').update({ priority: true }).in('id', plan.selectedIds);
-      await reportStep(suiteId, "SISTEMA 🧠", "Estrategia trazada.", 'success', 'system');
+  await supabase.from('test_steps').insert([
+    {
+      suite_id: suiteId,
+      action_type: agent,
+      selector: title,
+      expected_result: description,
+      status,
+      screenshot_url: screenshot
     }
-  } catch (e) { console.error(e); }
+  ]);
 }
 
-// --- FASE 3: ENJAMBRE ---
-async function startAgent(type, page, suiteId, mode, goal, apiKey) {
-  let actionsCount = 0;
-  let missionAccomplished = false;
+/* ------------------ VISIÓN ------------------ */
 
-  while (actionsCount < 8) {
-    const { data: suite } = await supabase.from('test_suites').select('status').eq('id', suiteId).maybeSingle();
-    if (suite?.status === 'success') { missionAccomplished = true; break; }
+async function getVisualContext(page, goal) {
+  const img = await stableScreenshot(page);
+  const base64 = img.toString('base64');
 
-    const { data: element } = await supabase.from('discovered_elements')
-      .select('*').eq('suite_id', suiteId).eq('status', 'pending')
-      .order('priority', { ascending: false }).limit(1).maybeSingle();
-
-    if (!element) break;
-    await supabase.from('discovered_elements').update({ status: 'testing' }).eq('id', element.id);
-
-    try {
-      const decision = await callAI({
-        systemPrompt: getSystemPrompt(type, mode, goal),
-        userContent: `ELEMENTO: ${JSON.stringify(element)}\nOBJETIVO: ${goal}`,
-        apiKey
-      });
-
-      if (decision.action !== 'none') {
-        const preState = await getWebSnapshot(page);
-        const locator = page.locator(element.selector).nth(element.step_order || 0);
-        
-        if (decision.action === 'type' || element.tag_name === 'INPUT') {
-          const val = goal.match(/'([^']+)'/)?.[1] || "AUDI";
-          await locator.click({ timeout: 5000 });
-          await locator.fill(val);
-          await page.keyboard.press('Enter');
-        } else {
-          await locator.click({ timeout: 5000, force: true });
-        }
-        
-        await page.waitForTimeout(4000); 
-        const postState = await getWebSnapshot(page);
-        const postImg = await uploadEvidenteToStorage(page, suiteId, `POST_${type}_${actionsCount}`);
-
-        const validation = await callAI({
-          systemPrompt: `Auditor QA. Objetivo: "${goal}". ¿Se logró? JSON: {"accomplished": boolean, "reason": "string"}`,
-          userContent: `PRE: ${JSON.stringify(preState)}\nPOST: ${JSON.stringify(postState)}`,
-          apiKey, model: "llama-3.1-8b-instant"
-        });
-
-        await reportStep(suiteId, `${decision.caseTitle}`, validation.reason, 'success', type, postImg);
-
-        if (mode === 'strike' && validation.accomplished) {
-          await supabase.from('test_suites').update({ status: 'success' }).eq('id', suiteId);
-          await reportStep(suiteId, "🎯 OBJETIVO LOGRADO", goal, 'success', 'system', postImg);
-          missionAccomplished = true;
-          break;
-        }
+  const res = await openai.responses.create({
+    model: 'gpt-4.1-mini',
+    input: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: `
+Describe la pantalla actual.
+Objetivo: "${goal}"
+Indica:
+- Qué se ve
+- Si hay bloqueos
+- Estado general (inicio, resultados, detalle, error)
+`
+          },
+          {
+            type: 'input_image',
+            image_url: `data:image/jpeg;base64,${base64}`
+          }
+        ]
       }
-      await supabase.from('discovered_elements').update({ status: 'tested' }).eq('id', element.id);
-    } catch (err) {
-      await reportStep(suiteId, `Error en ${type}`, err.message, 'failed', type);
-    }
-    actionsCount++;
-  }
-  return missionAccomplished;
-}
-
-// --- ORQUESTADOR ---
-export async function runChaosEvolution(url, suiteId, config = {}) {
-  const { mode = 'chaos', goal = '', apiKeys = [] } = config;
-  let browser = null;
-  try {
-    browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 800 }
-    });
-    const page = await context.newPage();
-    
-    await reportStep(suiteId, "SISTEMA 🛠️", "Navegador listo.", 'success', 'system');
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
-
-    await runScoutMapping(page, suiteId);
-    
-    // PAUSA DE SEGURIDAD PARA DB
-    await new Promise(r => setTimeout(r, 2000));
-
-    if (mode === 'strike') {
-      await generateTargetedPlan(suiteId, goal, apiKeys[0]);
-    }
-
-    // Ejecución secuencial para evitar colisiones
-    const uxResult = await startAgent('ux', page, suiteId, mode, goal, apiKeys[0]);
-    if (!uxResult) {
-      await startAgent('functional', page, suiteId, mode, goal, apiKeys[1] || apiKeys[0]);
-    }
-
-    const { data: finalSuite } = await supabase.from('test_suites').select('status').eq('id', suiteId).maybeSingle();
-    if (mode === 'strike' && finalSuite?.status !== 'success') {
-      await reportStep(suiteId, "❌ PRUEBA FALLIDA", "El objetivo no se cumplió.", 'failed', 'system');
-      await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId);
-    }
-
-  } catch (e) {
-    await reportStep(suiteId, "ERROR CRÍTICO 💥", e.message, 'failed', 'system');
-    await supabase.from('test_suites').update({ status: 'error' }).eq('id', suiteId);
-  } finally {
-    if (browser) await browser.close();
-  }
-}
-
-async function callAI({ systemPrompt, userContent, apiKey, model = "llama-3.3-70b-versatile" }) {
-  const client = new Groq({ apiKey: apiKey || process.env.GROQ_API_KEY });
-  const response = await client.chat.completions.create({
-    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userContent }],
-    model, response_format: { type: "json_object" }, temperature: 0
+    ]
   });
-  return JSON.parse(response.choices[0].message.content);
+
+  return res.output_text || '';
+}
+
+/* ------------------ VERIFICADOR ------------------ */
+
+async function verifyGoal({ goal, beforeDOM, afterDOM, visual }) {
+  if (!goal) return false;
+
+  if (beforeDOM !== afterDOM) return true;
+
+  if (afterDOM.toLowerCase().includes(goal.toLowerCase())) return true;
+
+  if (
+    visual.toLowerCase().includes('resultado') ||
+    visual.toLowerCase().includes('detalle') ||
+    visual.toLowerCase().includes('confirmación')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/* ------------------ AGENTE ------------------ */
+
+async function startAgent(page, suiteId, goal, apiKey) {
+  let prevDOM = '';
+  const maxSteps = 8;
+
+  for (let i = 0; i < maxSteps; i++) {
+    console.log(`\n--- ITERACIÓN ${i + 1} ---`);
+
+    const visual = await getVisualContext(page, goal);
+    console.log('[VISIÓN]', visual);
+
+    const snapshot = await page.evaluate(() => {
+      return Array.from(
+        document.querySelectorAll('a,button,input,[role="button"]')
+      )
+        .map((el, i) => ({
+          index: i,
+          text: (el.innerText || el.placeholder || '').slice(0, 40)
+        }))
+        .filter(e => e.text);
+    });
+
+    const decision = await callAI({
+      apiKey,
+      systemPrompt: `
+Eres un agente QA.
+Objetivo: "${goal}"
+Responde SOLO JSON:
+{"index": number, "action": "click|type", "value": "string"}
+`,
+      userContent: JSON.stringify(snapshot)
+    });
+
+    const stepImg = await uploadEvidence(page, suiteId, `step_${i}`);
+
+    await page.evaluate(({ index, action, value }) => {
+      const els = Array.from(
+        document.querySelectorAll('a,button,input,[role="button"]')
+      );
+      const el = els[index];
+      if (!el) return;
+
+      el.scrollIntoView({ block: 'center' });
+
+      if (action === 'type') {
+        el.value = value;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      } else {
+        el.click();
+      }
+    }, decision);
+
+    await page.waitForTimeout(2000);
+
+    const afterDOM = await page.content();
+
+    const achieved = await verifyGoal({
+      goal,
+      beforeDOM: prevDOM,
+      afterDOM,
+      visual
+    });
+
+    await reportStep(
+      suiteId,
+      decision.action.toUpperCase(),
+      decision.value || decision.action,
+      'success',
+      'striker',
+      stepImg
+    );
+
+    if (achieved) {
+      await reportStep(
+        suiteId,
+        'OBJETIVO',
+        'Verificado por sistema',
+        'success',
+        'system',
+        stepImg
+      );
+      break;
+    }
+
+    prevDOM = afterDOM;
+  }
+}
+
+/* ------------------ ENTRY ------------------ */
+
+export async function runChaosEvolution(url, suiteId, config = {}) {
+  const {
+    mode = 'chaos',
+    goal = '',
+    apiKeys = []
+  } = config;
+
+  const browser = await chromium.launch({ headless: true });
+  const page = await (await browser.newContext()).newPage();
+
+  await reportStep(suiteId, 'INICIO', `Modo: ${mode}`, 'success', 'system');
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+  await startAgent(page, suiteId, goal, apiKeys[0]);
+
+  await browser.close();
+}
+
+/* ------------------ LLM ------------------ */
+
+async function callAI({ systemPrompt, userContent, apiKey }) {
+  const groq = new Groq({ apiKey });
+
+  const res = await groq.chat.completions.create({
+    model: 'llama-3.1-8b-instant',
+    temperature: 0,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent }
+    ]
+  });
+
+  return JSON.parse(res.choices[0].message.content);
 }

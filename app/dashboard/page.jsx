@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react'; // Agregado useRef
 import { 
   Loader2, Target, Cpu, Activity, BrainCircuit, Globe, 
   Terminal, AlertCircle, CheckCircle2, ShieldAlert, Flame, Image as ImageIcon, X, ExternalLink
@@ -37,7 +37,7 @@ function EvidenceModal({ url, onClose, isDark }) {
   );
 }
 
-// --- COMPONENTE: SATURATION MONITOR (ACTUALIZADO PARA STRIKE) ---
+// --- COMPONENTE: SATURATION MONITOR ---
 function SaturationMonitor({ suiteId, isDark, missionMode, missionGoal, testCases, suiteStatus }) {
   const [elements, setElements] = useState([]);
 
@@ -63,15 +63,10 @@ function SaturationMonitor({ suiteId, isDark, missionMode, missionGoal, testCase
   const totalTested = elements.filter(e => e.status === 'tested').length;
   const progress = elements.length > 0 ? (totalTested / elements.length) * 100 : 0;
   
- // NUEVA LÓGICA DE ÉXITO:
-  // Es éxito si hay un emoji de diana O si el status global es 'completed'
   const isMissionSuccess = 
-    testCases.some(t => t.title.includes('🎯')) || 
-    suiteStatus === 'completed';;
+    testCases.some(t => t.objective.includes('cumplió') || t.status === 'success' && t.agentType?.includes('🎯')) || 
+    suiteStatus === 'completed';
 
-  
-
-  // --- UI PARA MODO STRIKE ---
   if (missionMode === 'strike') {
     return (
       <div className={`mb-8 p-8 rounded-[40px] border animate-in zoom-in-95 duration-500 ${
@@ -81,7 +76,6 @@ function SaturationMonitor({ suiteId, isDark, missionMode, missionGoal, testCase
           <div>
             <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-purple-500 mb-2">Tactical Strike Objective</h3>
             <p className={`text-2xl font-black italic uppercase tracking-tighter ${isDark ? 'text-white' : 'text-slate-900'}`}>
-              {/* Si terminó pero no hay diana, es que falló o terminó sin éxito directo */}
               {isMissionSuccess ? 'Mission Accomplished' : 
                suiteStatus === 'error' ? 'Mission Failed' : 'Acquiring Target...'}
             </p>
@@ -110,7 +104,6 @@ function SaturationMonitor({ suiteId, isDark, missionMode, missionGoal, testCase
     );
   }
 
-  // --- UI PARA MODO CHAOS / SCOUT ---
   if (elements.length === 0) return null;
 
   const areas = ['header', 'main', 'footer'];
@@ -160,7 +153,14 @@ function SaturationMonitor({ suiteId, isDark, missionMode, missionGoal, testCase
 
 // --- COMPONENTE: LIVE TACTICAL LOG ---
 function TacticalLog({ testCases, missionMode, isDark, onViewEvidence }) {
-  const lastTests = [...testCases].reverse();
+  const scrollRef = useRef(null); // Ref para el auto-scroll
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [testCases]);
+
   return (
     <div className={`relative overflow-hidden border rounded-[40px] p-8 min-h-[550px] flex flex-col transition-all ${
       isDark ? 'bg-[#050505] border-white/5' : 'bg-slate-50 border-slate-200 shadow-inner'
@@ -178,28 +178,30 @@ function TacticalLog({ testCases, missionMode, isDark, onViewEvidence }) {
             </div>
           </div>
         </div>
-        <div className="flex-1 space-y-3 font-mono text-[11px]">
-          {lastTests.length === 0 ? (
+        <div className="flex-1 space-y-3 font-mono text-[11px] overflow-y-auto max-h-[500px] pr-2 scrollbar-thin">
+          {testCases.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-slate-500 italic opacity-50">
               <Activity size={40} className="mb-4 animate-spin duration-[3s]" />
               <p>Awaiting Swarm Uplink...</p>
             </div>
           ) : (
-            lastTests.map((test, i) => (
-              <div key={test.id} className={`flex items-start gap-3 p-4 rounded-xl border animate-in slide-in-from-top duration-500 ${isDark ? 'bg-white/5 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`} style={{ opacity: 1 - (i * 0.05) }}>
+            testCases.map((test, i) => (
+              <div key={test.id} className={`flex items-start gap-3 p-4 rounded-xl border animate-in slide-in-from-bottom-2 duration-500 ${isDark ? 'bg-white/5 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`}>
                 <span className={test.status === 'success' ? 'text-emerald-500' : test.status === 'failed' ? 'text-red-500' : 'text-amber-500'}>
                   {test.status === 'success' ? <CheckCircle2 size={16}/> : test.status === 'failed' ? <ShieldAlert size={16}/> : <AlertCircle size={16}/>}
                 </span>
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2">
-                      <span className={`text-[8px] font-black px-1.5 py-0.5 rounded ${test.agentType === 'ux' ? 'bg-purple-500/20 text-purple-400' : test.agentType === 'system' ? 'bg-blue-500/20 text-blue-400' : 'bg-amber-500/20 text-amber-400'}`}>{test.agentType?.toUpperCase() || 'SYSTEM'}</span>
+                      <span className={`text-[8px] font-black px-1.5 py-0.5 rounded ${test.agentType?.includes('STRIKER') ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                        {test.agentType?.toUpperCase() || 'SYSTEM'}
+                      </span>
                       <span className={`font-black uppercase tracking-tighter ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{test.title}</span>
                     </div>
                     {test.screenshotUrl && (
                       <button 
                         onClick={() => onViewEvidence(test.screenshotUrl)}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 transition-all border border-blue-500/20 animate-pulse"
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 transition-all border border-blue-500/20"
                       >
                         <ImageIcon size={10} />
                         <span className="text-[8px] font-black uppercase">View Evidence</span>
@@ -212,6 +214,7 @@ function TacticalLog({ testCases, missionMode, isDark, onViewEvidence }) {
               </div>
             ))
           )}
+          <div ref={scrollRef} />
         </div>
       </div>
     </div>
@@ -232,10 +235,8 @@ export default function MissionControlPage() {
 
   useEffect(() => {
     if (!activeSuiteId) return;
-  
     setTestCases([]);
   
-    // 1. Canal de Pasos (ESTO ES LO QUE FALTABA CONECTAR)
     const stepsChannel = supabase
       .channel(`steps-realtime-${activeSuiteId}`)
       .on('postgres_changes', { 
@@ -245,9 +246,7 @@ export default function MissionControlPage() {
         filter: `suite_id=eq.${activeSuiteId}` 
       }, 
       (payload) => {
-        console.log("🔥 PASO RECIBIDO:", payload.new);
         const step = payload.new;
-        
         setTestCases(prev => [...prev, {
           id: step.id,
           title: step.selector || 'Sistema', 
@@ -260,14 +259,12 @@ export default function MissionControlPage() {
       })
       .subscribe();
   
-    // 2. Canal de Estado Global (Suite)
     const suiteChannel = supabase
       .channel(`suite-status-${activeSuiteId}`)
       .on('postgres_changes', { 
         event: 'UPDATE', schema: 'public', table: 'test_suites', filter: `id=eq.${activeSuiteId}` 
       }, 
       (payload) => {
-        console.log("🔔 ESTADO SUITE:", payload.new.status);
         if (payload.new.status === 'completed') setStatus('completed');
         if (payload.new.status === 'error') setStatus('error');
       })
@@ -286,7 +283,6 @@ export default function MissionControlPage() {
     
     try {
       const cleanUrl = url.trim();
-      // 1. Creamos la suite PRIMERO
       const { data: suite, error: sError } = await supabase
         .from('test_suites')
         .insert([{ 
@@ -298,12 +294,9 @@ export default function MissionControlPage() {
       
       if (sError) throw sError;
   
-      // 2. Seteamos el ID activo inmediatamente para activar los useEffect de Realtime
       setActiveSuiteId(suite.id);
       setStatus('running');
   
-      // 3. Llamamos al API pero NO usamos 'await'. 
-      // Queremos que el backend corra por su cuenta.
       fetch('/api/run-chaos', { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 

@@ -1,74 +1,85 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { runChaosEvolution } from '../../actions/agents';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 300; 
+export const maxDuration = 300;
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY 
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-export async function POST(request) {
-  console.log("\n--- 🛰️ DEPLOYING SWARM: /api/run-chaos ---");
-  
+export async function POST(request: Request) {
+  console.log('\n--- 🛰️ DEPLOYING SWARM: /api/run-chaos ---');
+
   try {
-    // EXTRAEMOS 'mode' Y 'goal' del request
-    const { url, suite_id, mode, goal } = await request.json();
-    
-    console.log(`🎯 Recibido modo: ${mode || 'chaos'} | Objetivo: ${goal || 'Ninguno'}`);
+    const { url, suite_id, mode = 'chaos', goal = '' } = await request.json();
 
-    // 1. Limpieza de URL
-    const cleanUrl = url.startsWith('http') ? url : `https://${url}`;
-
-    // 2. Configuración de API Keys
-    const apiKeys = [
-      process.env.GROQ_API_KEY,      
-      process.env.GROQ_API_KEY_2,    
-      process.env.GROQ_API_KEY_3     
-    ].filter(Boolean);
-
-    if (!suite_id) {
-      return NextResponse.json({ success: false, error: "No suite_id" }, { status: 400 });
+    if (!url || !suite_id) {
+      return NextResponse.json(
+        { success: false, error: 'Missing url or suite_id' },
+        { status: 400 }
+      );
     }
 
-    // 3. Inicializar el estado en la DB
-    const { error: upsertError } = await supabase.from('test_runs').upsert({ 
-      suite_id, 
-      status: 'preparing', 
-      report_data: { 
-        history: [],
-        coverage: 0, 
-        discovered_nodes: [] 
-      }, 
-      updated_at: new Date().toISOString()
-    }, { onConflict: 'suite_id' });
+    console.log(`🎯 MODO: ${mode.toUpperCase()} | OBJETIVO: ${goal || 'N/A'}`);
 
-    if (upsertError) throw new Error("Database sync failed");
+    const cleanUrl = url.startsWith('http') ? url : `https://${url}`;
 
-    // 4. LANZAMIENTO DEL ENJAMBRE
-    // IMPORTANTE: Ahora pasamos el objeto config con mode y goal
+    const apiKeys = [
+      process.env.GROQ_API_KEY,
+      process.env.GROQ_API_KEY_2,
+      process.env.GROQ_API_KEY_3
+    ].filter(Boolean);
+
+    // Estado inicial
+    await supabase
+      .from('test_suites')
+      .update({ status: 'running' })
+      .eq('id', suite_id);
+
+    await supabase.from('test_runs').upsert(
+      {
+        suite_id,
+        status: 'running',
+        report_data: {
+          history: [],
+          coverage: 0,
+          discovered_nodes: []
+        },
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: 'suite_id' }
+    );
+
+    // 🚀 LANZAMIENTO DEL AGENTE (UNA SOLA FUNCIÓN)
     runChaosEvolution(cleanUrl, suite_id, {
-      mode: mode || 'chaos',
-      goal: goal || '',
-      apiKeys: apiKeys
-    }).catch(err => {
-      console.error("🚨 SWARM CRASHED:", err.message);
+      mode,
+      goal,
+      apiKeys
+    }).catch(async (err) => {
+      console.error('🚨 SWARM CRASHED:', err.message);
+      await supabase
+        .from('test_suites')
+        .update({ status: 'error' })
+        .eq('id', suite_id);
     });
 
-    return NextResponse.json({ 
-      success: true, 
-      message: "Swarm Fleet Deployed", 
+    return NextResponse.json({
+      success: true,
       activeSuiteId: suite_id,
-      agentsActive: apiKeys.length,
-      mode: mode,
-      goal: goal
+      mode,
+      goal,
+      agentsActive: apiKeys.length
     });
 
-  } catch (error) {
-    console.error("🚨 DEPLOYMENT FATAL:", error.message);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  } catch (err: any) {
+    console.error('🚨 DEPLOYMENT FATAL:', err.message);
+    return NextResponse.json(
+      { success: false, error: err.message },
+      { status: 500 }
+    );
   }
 }
