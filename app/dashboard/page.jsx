@@ -1,330 +1,401 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
-  Loader2, Target, Cpu, Monitor, Zap, Activity, BrainCircuit, Globe, ChevronRight, Save, CheckCircle2, AlertTriangle, BarChart3
+  Loader2, Target, Cpu, Activity, BrainCircuit, Globe, 
+  Terminal, AlertCircle, CheckCircle2, ShieldAlert, Flame, Image as ImageIcon, X, ExternalLink
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { useTheme } from '../contexts/ThemeContext'; 
-
-// --- FIX CRÍTICO: Importación como módulo para evitar "is not a function" ---
-import * as agents from '../actions/agents'; 
+import StrategicHistory from './StrategicHistory'; 
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
+// --- COMPONENTE: MODAL DE EVIDENCIA ---
+function EvidenceModal({ url, onClose, isDark }) {
+  if (!url) return null;
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-300">
+      <div className={`relative max-w-5xl w-full rounded-[30px] overflow-hidden border ${isDark ? 'bg-[#0a0a0a] border-white/10' : 'bg-white border-slate-200'}`}>
+        <div className="p-4 border-b border-white/5 flex justify-between items-center bg-black/20">
+          <span className="text-[10px] font-black uppercase tracking-widest text-blue-500">Visual Evidence Captured</span>
+          <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X size={20} /></button>
+        </div>
+        <div className="p-2 bg-slate-900/50">
+          <img src={url} alt="Evidence" className="w-full h-auto rounded-xl shadow-2xl" />
+        </div>
+        <div className="p-4 text-center">
+          <a href={url} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-slate-500 hover:text-blue-500 uppercase flex items-center justify-center gap-2">
+            Open original <ExternalLink size={12} />
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- COMPONENTE: SATURATION MONITOR (ACTUALIZADO PARA STRIKE) ---
+function SaturationMonitor({ suiteId, isDark, missionMode, missionGoal, testCases, suiteStatus }) {
+  const [elements, setElements] = useState([]);
+
+  useEffect(() => {
+    if (!suiteId) return;
+    const fetchElements = async () => {
+      const { data } = await supabase.from('discovered_elements').select('*').eq('suite_id', suiteId);
+      if (data) setElements(data);
+    };
+    fetchElements();
+    const channel = supabase
+      .channel(`coverage-${suiteId}`)
+      .on('postgres_changes', { 
+        event: '*', schema: 'public', table: 'discovered_elements', filter: `suite_id=eq.${suiteId}`
+      }, (payload) => {
+        if (payload.eventType === 'INSERT') setElements(prev => [...prev, payload.new]);
+        else if (payload.eventType === 'UPDATE') setElements(prev => prev.map(el => el.id === payload.new.id ? payload.new : el));
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [suiteId]);
+
+  const totalTested = elements.filter(e => e.status === 'tested').length;
+  const progress = elements.length > 0 ? (totalTested / elements.length) * 100 : 0;
+  
+ // NUEVA LÓGICA DE ÉXITO:
+  // Es éxito si hay un emoji de diana O si el status global es 'completed'
+  const isMissionSuccess = 
+    testCases.some(t => t.title.includes('🎯')) || 
+    suiteStatus === 'completed';;
+
+  
+
+  // --- UI PARA MODO STRIKE ---
+  if (missionMode === 'strike') {
+    return (
+      <div className={`mb-8 p-8 rounded-[40px] border animate-in zoom-in-95 duration-500 ${
+        isDark ? 'bg-[#050505] border-purple-500/20' : 'bg-white border-purple-100 shadow-xl shadow-purple-500/5'
+      }`}>
+        <div className="flex justify-between items-start mb-6">
+          <div>
+            <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-purple-500 mb-2">Tactical Strike Objective</h3>
+            <p className={`text-2xl font-black italic uppercase tracking-tighter ${isDark ? 'text-white' : 'text-slate-900'}`}>
+              {/* Si terminó pero no hay diana, es que falló o terminó sin éxito directo */}
+              {isMissionSuccess ? 'Mission Accomplished' : 
+               suiteStatus === 'error' ? 'Mission Failed' : 'Acquiring Target...'}
+            </p>
+          </div>
+          <div className={`p-4 rounded-2xl ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'}`}>
+            <Target className={`animate-pulse ${isMissionSuccess ? 'text-emerald-500' : 'text-purple-500'}`} size={24} />
+          </div>
+        </div>
+        
+        <div className="relative h-4 w-full bg-slate-900/50 rounded-full overflow-hidden p-1 border border-white/5">
+          <div 
+            className={`h-full rounded-full transition-all duration-1000 ${
+              isMissionSuccess 
+                ? 'w-full bg-emerald-500 shadow-[0_0_20px_#10b981]' 
+                : 'w-[40%] bg-purple-600 animate-pulse'
+            }`}
+          />
+        </div>
+        <div className="mt-4 flex justify-between items-center">
+          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Target: {missionGoal}</span>
+          <span className="font-mono text-xs font-bold text-purple-400">
+            {isMissionSuccess ? '100%' : suiteStatus === 'running' ? 'EXECUTING...' : 'WAITING...'}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  // --- UI PARA MODO CHAOS / SCOUT ---
+  if (elements.length === 0) return null;
+
+  const areas = ['header', 'main', 'footer'];
+  const stats = areas.map(area => {
+    const areaEls = elements.filter(e => e.area === area);
+    const tested = areaEls.filter(e => e.status === 'tested').length;
+    return { area, total: areaEls.length, tested };
+  });
+
+  return (
+    <div className={`mb-8 p-6 rounded-[40px] border animate-in fade-in slide-in-from-bottom-4 duration-700 ${
+      isDark ? 'bg-[#050505] border-white/5' : 'bg-white border-slate-200 shadow-xl'
+    }`}>
+      <div className="flex justify-between items-end mb-6">
+        <div>
+          <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-blue-500 mb-1">Saturation Monitor</h3>
+          <p className={`text-3xl font-black italic uppercase tracking-tighter ${isDark ? 'text-white' : 'text-slate-900'}`}>
+            {progress.toFixed(0)}% <span className="text-blue-600">Coverage</span>
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Annihilated Hotspots</p>
+          <p className={`font-mono text-xl font-black ${isDark ? 'text-white' : 'text-slate-900'}`}>{totalTested} / {elements.length}</p>
+        </div>
+      </div>
+
+      <div className="flex h-3 gap-1 w-full rounded-full overflow-hidden bg-slate-900/50 p-1 border border-white/5 backdrop-blur-md">
+        {elements.map((el) => (
+          <div key={el.id} className={`flex-1 transition-all duration-700 rounded-[1px] ${el.status === 'tested' ? 'bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.6)]' : 'bg-slate-800'}`} />
+        ))}
+      </div>
+
+      <div className="grid grid-cols-3 gap-6 mt-6">
+        {stats.map(s => (
+          <div key={s.area} className={`p-3 rounded-2xl border ${isDark ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'}`}>
+            <div className="flex items-center gap-2 mb-1">
+              <div className={`h-1.5 w-1.5 rounded-full ${s.tested === s.total && s.total > 0 ? 'bg-emerald-500 shadow-[0_0_5px_#10b981]' : 'bg-blue-500 animate-pulse'}`} />
+              <span className="text-[9px] font-black uppercase text-slate-500 tracking-tighter">{s.area}</span>
+            </div>
+            <p className={`text-xs font-mono font-bold ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{s.tested} / {s.total}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// --- COMPONENTE: LIVE TACTICAL LOG ---
+function TacticalLog({ testCases, missionMode, isDark, onViewEvidence }) {
+  const lastTests = [...testCases].reverse();
+  return (
+    <div className={`relative overflow-hidden border rounded-[40px] p-8 min-h-[550px] flex flex-col transition-all ${
+      isDark ? 'bg-[#050505] border-white/5' : 'bg-slate-50 border-slate-200 shadow-inner'
+    }`}>
+      <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#3b82f6 1px, transparent 1px)', backgroundSize: '30px 30px' }} />
+      <div className="relative z-10 flex flex-col h-full">
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-lg ${missionMode === 'chaos' ? 'bg-orange-500/10 text-orange-500' : missionMode === 'strike' ? 'bg-purple-500/10 text-purple-500' : 'bg-blue-500/10 text-blue-500'}`}>
+              <Terminal size={18} />
+            </div>
+            <div>
+              <h3 className={`text-[10px] font-black uppercase tracking-[0.2em] ${isDark ? 'text-white' : 'text-slate-900'}`}>Neural Stream Execution</h3>
+              <p className="text-[8px] text-slate-500 font-bold uppercase">Parallel Agent Telemetry</p>
+            </div>
+          </div>
+        </div>
+        <div className="flex-1 space-y-3 font-mono text-[11px]">
+          {lastTests.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-slate-500 italic opacity-50">
+              <Activity size={40} className="mb-4 animate-spin duration-[3s]" />
+              <p>Awaiting Swarm Uplink...</p>
+            </div>
+          ) : (
+            lastTests.map((test, i) => (
+              <div key={test.id} className={`flex items-start gap-3 p-4 rounded-xl border animate-in slide-in-from-top duration-500 ${isDark ? 'bg-white/5 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`} style={{ opacity: 1 - (i * 0.05) }}>
+                <span className={test.status === 'success' ? 'text-emerald-500' : test.status === 'failed' ? 'text-red-500' : 'text-amber-500'}>
+                  {test.status === 'success' ? <CheckCircle2 size={16}/> : test.status === 'failed' ? <ShieldAlert size={16}/> : <AlertCircle size={16}/>}
+                </span>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[8px] font-black px-1.5 py-0.5 rounded ${test.agentType === 'ux' ? 'bg-purple-500/20 text-purple-400' : test.agentType === 'system' ? 'bg-blue-500/20 text-blue-400' : 'bg-amber-500/20 text-amber-400'}`}>{test.agentType?.toUpperCase() || 'SYSTEM'}</span>
+                      <span className={`font-black uppercase tracking-tighter ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{test.title}</span>
+                    </div>
+                    {test.screenshotUrl && (
+                      <button 
+                        onClick={() => onViewEvidence(test.screenshotUrl)}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 transition-all border border-blue-500/20 animate-pulse"
+                      >
+                        <ImageIcon size={10} />
+                        <span className="text-[8px] font-black uppercase">View Evidence</span>
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-slate-500 leading-relaxed text-[10px]">{test.objective}</p>
+                </div>
+                <div className="text-[8px] text-slate-600 font-bold">{test.timestamp}</div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- COMPONENTE PRINCIPAL ---
 export default function MissionControlPage() {
   const [url, setUrl] = useState('');
   const [status, setStatus] = useState('idle'); 
+  const [missionMode, setMissionMode] = useState('scout'); 
+  const [missionGoal, setMissionGoal] = useState('');
   const [testCases, setTestCases] = useState([]);
-  const [savingId, setSavingId] = useState(null); 
+  const [activeSuiteId, setActiveSuiteId] = useState(null);
+  const [selectedEvidence, setSelectedEvidence] = useState(null);
   const { theme } = useTheme(); 
+  const isDark = theme === 'dark';
 
-  // --- LÓGICA DE ESTADÍSTICAS ---
-  const stats = useMemo(() => {
-    const relevantTests = testCases.filter(t => t.id !== 'scan');
-    const total = relevantTests.length;
-    const passed = relevantTests.filter(t => t.status === 'success').length;
-    const failed = relevantTests.filter(t => t.status === 'failed').length;
-    const health = total > 0 ? Math.round((passed / total) * 100) : 0;
-    return { total, passed, failed, health };
-  }, [testCases]);
+  useEffect(() => {
+    if (!activeSuiteId) return;
+  
+    setTestCases([]);
+  
+    // 1. Canal de Pasos (ESTO ES LO QUE FALTABA CONECTAR)
+    const stepsChannel = supabase
+      .channel(`steps-realtime-${activeSuiteId}`)
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'test_steps', 
+        filter: `suite_id=eq.${activeSuiteId}` 
+      }, 
+      (payload) => {
+        console.log("🔥 PASO RECIBIDO:", payload.new);
+        const step = payload.new;
+        
+        setTestCases(prev => [...prev, {
+          id: step.id,
+          title: step.selector || 'Sistema', 
+          objective: step.expected_result || 'Analizando...',
+          status: step.status,
+          agentType: step.action_type || 'system',
+          screenshotUrl: step.screenshot_url,
+          timestamp: new Date(step.created_at).toLocaleTimeString()
+        }]);
+      })
+      .subscribe();
+  
+    // 2. Canal de Estado Global (Suite)
+    const suiteChannel = supabase
+      .channel(`suite-status-${activeSuiteId}`)
+      .on('postgres_changes', { 
+        event: 'UPDATE', schema: 'public', table: 'test_suites', filter: `id=eq.${activeSuiteId}` 
+      }, 
+      (payload) => {
+        console.log("🔔 ESTADO SUITE:", payload.new.status);
+        if (payload.new.status === 'completed') setStatus('completed');
+        if (payload.new.status === 'error') setStatus('error');
+      })
+      .subscribe();
+  
+    return () => { 
+      supabase.removeChannel(stepsChannel);
+      supabase.removeChannel(suiteChannel);
+    };
+  }, [activeSuiteId]);
 
   const handleStartMission = async () => {
     if (!url) return;
-
-    // Validación de carga del motor
-    if (!agents.createMissionRecord) {
-        console.error("VIGA Engine failed to bind to Client.");
-        alert("Error de sincronización. Por favor, refresca la página.");
-        return;
-    }
-
     setStatus('deploying');
-    
-    // Reset de logs con el paso de escaneo inicial
-    setTestCases([
-      { id: 'scan', title: 'Architect Prime', status: 'running', objective: 'Mapping DOM & assigning specialized units...', agentType: 'standard' }
-    ]);
+    setTestCases([]);
     
     try {
-      // 1. Crear registro en DB
-      const missionId = await agents.createMissionRecord(url);
-      
-      // 2. Obtener plan de la IA
-      const planResult = await agents.getMissionPlan(url); 
-      
-      if (!planResult.success) {
-        if (missionId) await agents.updateMissionStatus(missionId, 'failed');
-        setStatus('error');
-        setTestCases(prev => prev.map(t => t.id === 'scan' ? { ...t, status: 'failed', objective: `Error: ${planResult.error}` } : t));
-        return;
-      }
-
-      // 3. Preparar ejecución de tests
-      const initialTests = planResult.plan.map((t, idx) => ({ ...t, id: `test-${idx}`, status: 'pending' }));
-      setTestCases(initialTests);
-
-      // 4. Ejecución Secuencial
-      for (const test of initialTests) {
-        // Marcar test actual como en ejecución
-        setTestCases(prev => prev.map(t => t.id === test.id ? { ...t, status: 'running' } : t));
-        
-        // Ejecutar acción en el navegador
-        const result = await agents.executeSingleTest(url, test, planResult.pageContext);
-        
-        // Guardar resultado individual
-        if (missionId) await agents.saveTestResult(missionId, result);
-        
-        // Actualizar UI con el resultado
-        setTestCases(prev => prev.map(t => 
-          t.id === test.id ? { ...result, id: test.id, status: result.status } : t
-        ));
-      }
-
-      // 5. Finalizar Misión
-      // Calculamos el estado final basado en si hubo fallos
-      const hasFailures = testCases.some(t => t.status === 'failed');
-      const finalStatus = hasFailures ? 'partial_success' : 'success';
-      
-      if (missionId) await agents.updateMissionStatus(missionId, finalStatus);
-      setStatus('completed');
-      
-    } catch (error) {
-      console.error("Mission Control Error:", error);
-      setStatus('error');
-    }
-  };
-
-  const handleSaveToSuite = async (testResult) => {
-    setSavingId(testResult.id);
-    const suiteName = prompt("Nombre para esta Suite (Regresión):", `${testResult.title} - ${testResult.status === 'success' ? 'PASS' : 'FAIL'}`);
-    if (!suiteName) { setSavingId(null); return; }
-
-    try {
-      const { data: suite } = await supabase
+      const cleanUrl = url.trim();
+      // 1. Creamos la suite PRIMERO
+      const { data: suite, error: sError } = await supabase
         .from('test_suites')
-        .insert([{ name: suiteName, base_url: url, status: testResult.status }])
+        .insert([{ 
+          name: `${missionMode.toUpperCase()}: ${cleanUrl}`, 
+          base_url: cleanUrl, 
+          status: 'running'
+        }])
         .select().single();
-
-      await supabase.from('test_steps').insert([{
-        suite_id: suite.id,
-        action_type: testResult.actionTaken?.action || 'click',
-        selector: testResult.actionTaken?.selector || testResult.decidedValue || 'unknown',
-        dna_html: testResult.dna?.fullHtml || null,
-        step_order: 0
-      }]);
-
-      alert("¡Capturado para análisis permanente!");
-    } catch (err) {
-      console.error(err);
-      alert("Error al guardar la suite.");
-    } finally {
-      setSavingId(null);
+      
+      if (sError) throw sError;
+  
+      // 2. Seteamos el ID activo inmediatamente para activar los useEffect de Realtime
+      setActiveSuiteId(suite.id);
+      setStatus('running');
+  
+      // 3. Llamamos al API pero NO usamos 'await'. 
+      // Queremos que el backend corra por su cuenta.
+      fetch('/api/run-chaos', { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify({ 
+          url: cleanUrl, 
+          suite_id: suite.id, 
+          mode: missionMode, 
+          goal: missionGoal 
+        }) 
+      }).catch(err => console.error("Error en el trigger:", err));
+  
+    } catch (e) { 
+      setStatus('error'); 
     }
   };
 
   return (
-    <div className="max-w-6xl mx-auto pb-20">
-      <header className="mb-12 border-b border-white/5 pb-8 flex justify-between items-end">
-        <div className="flex flex-col gap-1">
+    <div className="max-w-7xl mx-auto pb-32 px-6">
+      <EvidenceModal url={selectedEvidence} onClose={() => setSelectedEvidence(null)} isDark={isDark} />
+      
+      <header className={`mb-12 border-b py-10 flex justify-between items-end ${isDark ? 'border-white/5' : 'border-slate-200'}`}>
+        <div className="space-y-2">
           <div className="flex items-center gap-2 text-[10px] font-black uppercase text-blue-500 tracking-[0.4em]">
-            <Activity size={12} /> Mission Control
+            <Activity size={14} className="animate-pulse" /> Swarm Intelligence System v2.0
           </div>
-          <h1 className={`text-3xl font-black tracking-tighter uppercase ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
-            Autonomous Orchestration
+          <h1 className={`text-5xl font-black tracking-tighter uppercase italic ${isDark ? 'text-white' : 'text-slate-900'}`}>
+            Audit <span className="text-blue-600">Orchestrator</span>
           </h1>
         </div>
-
-        {testCases.length > 1 && (
-          <div className="flex gap-6 items-center bg-white/5 p-4 rounded-3xl border border-white/5">
-             <div className="text-center">
-               <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">System Health</p>
-               <p className={`text-xl font-black ${stats.health > 70 ? 'text-emerald-500' : 'text-amber-500'}`}>{stats.health}%</p>
-             </div>
-             <div className="h-8 w-[1px] bg-white/10" />
-             <div className="flex gap-4">
-               <div>
-                 <p className="text-[8px] font-black text-slate-500 uppercase">Passed</p>
-                 <p className="text-sm font-black text-emerald-500">{stats.passed}</p>
-               </div>
-               <div>
-                 <p className="text-[8px] font-black text-slate-500 uppercase">Failed</p>
-                 <p className="text-sm font-black text-red-500">{stats.failed}</p>
-               </div>
-             </div>
-          </div>
-        )}
       </header>
 
-      {/* INPUT COMMAND */}
-      <div className={`mb-16 p-2 rounded-[32px] border transition-all ${
-        status === 'deploying' ? 'border-blue-500/50 bg-blue-500/5 shadow-[0_0_30px_rgba(59,130,246,0.1)]' : 
-        theme === 'dark' ? 'border-white/5 bg-[#080808]' : 'border-slate-200 bg-white shadow-xl'
-      } flex items-center group`}>
-        <div className="px-5 text-slate-400">
-          {status === 'deploying' ? <Loader2 className="animate-spin text-blue-500" size={20}/> : <Globe size={20}/>}
+      <div className={`mb-16 p-8 rounded-[50px] border transition-all ${isDark ? 'bg-[#080808] border-white/5 shadow-2xl' : 'bg-white border-slate-200 shadow-2xl shadow-blue-100'}`}>
+        <div className="flex flex-col gap-6">
+          <div className="flex items-center justify-between px-4">
+            <div className="flex gap-2 p-1.5 bg-black/40 rounded-[24px] border border-white/5 shadow-inner">
+              <button onClick={() => setMissionMode('scout')} className={`flex items-center gap-2 text-[9px] font-black px-5 py-2.5 rounded-xl transition-all ${missionMode === 'scout' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}><Globe size={12} /> LEVEL 1: SCOUT</button>
+              <button onClick={() => setMissionMode('chaos')} className={`flex items-center gap-2 text-[9px] font-black px-5 py-2.5 rounded-xl transition-all ${missionMode === 'chaos' ? 'bg-orange-600 text-white shadow-[0_0_15px_rgba(249,115,22,0.3)]' : 'text-slate-500 hover:text-slate-300'}`}><Flame size={12} /> LEVEL 2: CHAOS</button>
+              <button onClick={() => setMissionMode('strike')} className={`flex items-center gap-2 text-[9px] font-black px-5 py-2.5 rounded-xl transition-all ${missionMode === 'strike' ? 'bg-purple-600 text-white shadow-[0_0_15px_rgba(147,51,234,0.3)]' : 'text-slate-500 hover:text-slate-300'}`}><Target size={12} /> LEVEL 3: STRIKE</button>
+            </div>
+            <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Protocol: {missionMode}</span>
+          </div>
+
+          <div className="px-4 space-y-4">
+            {missionMode === 'strike' && (
+              <div className="animate-in slide-in-from-top-2 duration-300">
+                <div className={`flex items-center gap-4 p-4 rounded-3xl border ${isDark ? 'bg-purple-500/5 border-purple-500/20' : 'bg-purple-50 border-purple-100'}`}>
+                  <BrainCircuit size={20} className="text-purple-500 ml-2" />
+                  <input type="text" placeholder="¿QUÉ FUNCIÓN ESPECÍFICA QUERÉS ATACAR?" className={`flex-1 bg-transparent border-none outline-none text-sm font-bold ${isDark ? 'text-purple-200' : 'text-purple-900'}`} value={missionGoal} onChange={(e) => setMissionGoal(e.target.value)} />
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className={`md:col-span-2 flex items-center gap-4 p-4 rounded-3xl border ${isDark ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-200'}`}>
+                <Globe size={20} className={`ml-2 ${missionMode === 'scout' ? 'text-blue-500' : missionMode === 'chaos' ? 'text-orange-500' : 'text-purple-500'}`}/>
+                <input type="text" placeholder="TARGET URL" className={`flex-1 bg-transparent border-none outline-none text-sm font-black uppercase tracking-widest ${isDark ? 'text-white' : 'text-slate-900'}`} value={url} onChange={(e) => setUrl(e.target.value)}/>
+              </div>
+              <button onClick={handleStartMission} disabled={status === 'deploying' || status === 'running' || !url} className={`h-full rounded-3xl font-black text-xs uppercase text-white shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 ${status === 'running' ? 'bg-emerald-600' : (missionMode === 'chaos' ? 'bg-orange-600' : missionMode === 'strike' ? 'bg-purple-600' : 'bg-blue-600')}`}>
+                {status === 'running' ? <><Loader2 className="animate-spin" size={16}/> Protocol Active</> : 'Launch Mission'}
+              </button>
+            </div>
+          </div>
         </div>
-        <input 
-          type="text"
-          placeholder="HTTPS://ENTER-TARGET-URL.COM"
-          className={`flex-1 bg-transparent border-none outline-none py-5 text-xs font-black uppercase tracking-[0.2em] ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          disabled={status === 'deploying'}
-        />
-        <button 
-          onClick={handleStartMission}
-          disabled={status === 'deploying'}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-10 py-5 rounded-2xl font-black text-[10px] uppercase tracking-[0.3em] transition-all active:scale-95 disabled:opacity-50 flex items-center gap-3"
-        >
-          {status === 'deploying' ? <><Loader2 size={14} className="animate-spin"/> Scanning DOM</> : 'Start Mission'}
-        </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-10">
-        <div className="lg:col-span-3 space-y-4">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-[10px] font-black uppercase text-slate-500 tracking-[0.3em] flex items-center gap-2">
-              Tactical Log <ChevronRight size={12} />
-            </h2>
-            {status === 'completed' && (
-              <span className="text-[9px] font-black bg-emerald-500 text-white px-3 py-1 rounded-full uppercase tracking-widest animate-fade-in">
-                Mission Finished
-              </span>
-            )}
-          </div>
-          
-          {testCases.length === 0 ? (
-            <div className="border border-dashed border-white/10 rounded-[40px] p-24 text-center">
-              <Zap className="mx-auto text-slate-800 mb-4" size={40}/>
-              <p className="text-slate-600 text-[10px] font-black uppercase tracking-widest">Awaiting Command</p>
-            </div>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
+        <div className="lg:col-span-8">
+          {activeSuiteId && <SaturationMonitor suiteId={activeSuiteId} isDark={isDark} missionMode={missionMode} missionGoal={missionGoal}  testCases={testCases} suiteStatus={status} />}
+          {testCases.length === 0 && status !== 'running' ? (
+            <StrategicHistory onReplay={setUrl} />
           ) : (
-            <div className="space-y-4">
-              {testCases.map((test, i) => (
-                <MissionRow 
-                  key={test.id || i} 
-                  test={test} 
-                  theme={theme} 
-                  onSave={() => handleSaveToSuite(test)}
-                  isSaving={savingId === test.id}
-                />
-              ))}
-            </div>
+            <TacticalLog testCases={testCases} missionMode={missionMode} isDark={isDark} onViewEvidence={setSelectedEvidence} />
           )}
         </div>
-
-        <aside className="space-y-6">
-          <div className={`${theme === 'dark' ? 'bg-[#080808] border-white/5' : 'bg-white border-slate-200'} border rounded-[32px] p-8 space-y-8`}>
-            <h2 className="text-[10px] font-black uppercase text-slate-500 tracking-[0.3em] flex items-center gap-2">
-              <BrainCircuit size={14} className="text-blue-500"/> Agent Intel
+        <aside className="lg:col-span-4 space-y-6">
+          <div className={`p-8 rounded-[40px] border ${isDark ? 'bg-[#080808] border-white/5' : 'bg-white border-slate-200 shadow-xl'}`}>
+            <h2 className="text-[11px] font-black uppercase text-slate-500 tracking-[0.2em] mb-8 flex items-center gap-2">
+              <BrainCircuit size={16} className="text-blue-500"/> Deployment Status
             </h2>
-            <AgentStatus label="UX Specialist" desc="Visual & Flows" active={testCases.some(t => t.agentType === 'ux' && t.status === 'running')} />
-            <AgentStatus label="Logic Eng" desc="Functional" active={testCases.some(t => t.agentType === 'functional' && t.status === 'running')} />
-            <AgentStatus label="A11y Monitor" desc="Compliance" active={testCases.some(t => t.agentType === 'access' && t.status === 'running')} />
-          </div>
-          
-          {testCases.length > 1 && (
-            <div className="bg-blue-600 p-8 rounded-[32px] text-white space-y-4 shadow-lg shadow-blue-500/20">
-              <BarChart3 size={24} />
-              <div>
-                <p className="text-[10px] font-black uppercase opacity-60 tracking-widest">Overall Coverage</p>
-                <p className="text-3xl font-black">{stats.health}%</p>
-              </div>
-              <div className="w-full bg-white/20 h-1.5 rounded-full overflow-hidden">
-                <div className="bg-white h-full transition-all duration-1000" style={{ width: `${stats.health}%` }} />
-              </div>
+            <div className="space-y-4 opacity-80">
+               <div className={`p-4 rounded-2xl border ${isDark ? 'bg-white/5 border-white/5' : 'bg-slate-50'}`}>
+                  <p className="text-[8px] font-black text-slate-500 uppercase">Current Fleet</p>
+                  <p className={`text-xl font-black uppercase italic ${isDark ? 'text-white' : 'text-slate-900'}`}>Swarm Alpha-6</p>
+               </div>
+               <div className={`p-4 rounded-2xl border ${isDark ? 'bg-white/5 border-white/5' : 'bg-slate-50'}`}>
+                  <p className="text-[8px] font-black text-slate-500 uppercase">Encryption</p>
+                  <p className={`text-xl font-black uppercase italic ${isDark ? 'text-white' : 'text-slate-900'}`}>AES-256 Neural</p>
+               </div>
             </div>
-          )}
+          </div>
         </aside>
       </div>
-    </div>
-  );
-}
-
-function MissionRow({ test, theme, onSave, isSaving }) {
-  const isRunning = test.status === 'running';
-  const isSuccess = test.status === 'success';
-  const isFailed = test.status === 'failed';
-
-  const agentConfigs = {
-    ux: { label: 'UX/UI Agent', color: 'bg-purple-500/10 text-purple-400 border-purple-500/20', icon: <Target size={16}/> },
-    functional: { label: 'Logic Agent', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', icon: <Cpu size={16}/> },
-    access: { label: 'A11y Agent', color: 'bg-blue-500/10 text-blue-400 border-blue-500/20', icon: <Monitor size={16}/> },
-    standard: { label: 'System', color: 'bg-slate-500/10 text-slate-400 border-white/10', icon: <Zap size={16}/> }
-  };
-
-  const config = agentConfigs[test.agentType] || agentConfigs.standard;
-
-  return (
-    <div className={`rounded-2xl border p-5 transition-all ${
-      isRunning ? 'border-blue-500/50 bg-blue-500/5' : 
-      isFailed ? 'border-red-500/30 bg-red-500/5' : 'border-white/5 bg-white/5'
-    }`}>
-      <div className="flex justify-between items-center">
-        <div className="flex items-center gap-4">
-          <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
-            isRunning ? 'bg-blue-500 text-white animate-pulse' : 
-            isFailed ? 'bg-red-500 text-white' :
-            isSuccess ? 'bg-emerald-500 text-white' : 'bg-white/5 text-slate-500'
-          }`}>
-            {isRunning ? <Loader2 className="animate-spin" size={18}/> : 
-             isSuccess ? <CheckCircle2 size={18}/> :
-             isFailed ? <AlertTriangle size={18}/> : config.icon}
-          </div>
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className={`text-[7px] px-2 py-0.5 rounded-full font-black uppercase border ${config.color}`}>
-                {config.label}
-              </span>
-              <h4 className="text-[11px] font-black uppercase text-white tracking-widest">{test.title}</h4>
-              {isSuccess && <span className="text-[8px] text-emerald-500 font-black tracking-tighter">[PASSED]</span>}
-              {isFailed && <span className="text-[8px] text-red-500 font-black tracking-tighter">[FAILED]</span>}
-            </div>
-            <p className="text-[9px] text-slate-500 font-bold uppercase italic">{test.objective}</p>
-          </div>
-        </div>
-
-        {(isSuccess || isFailed) && (
-          <button 
-            onClick={onSave}
-            disabled={isSaving}
-            className={`flex items-center gap-2 border px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
-              isFailed ? 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500 hover:text-white' :
-              'bg-emerald-500/10 text-emerald-500 border-emerald-500/20 hover:bg-emerald-500 hover:text-white'
-            }`}
-          >
-            {isSaving ? <Loader2 size={12} className="animate-spin"/> : <Save size={12}/>}
-            {isSaving ? 'Capturing...' : isFailed ? 'Save Evidence' : 'Capture Suite'}
-          </button>
-        )}
-      </div>
-
-      {test.reasoning && (
-        <div className={`mt-4 pt-4 border-t ${isFailed ? 'border-red-500/10' : 'border-white/5'}`}>
-          <p className="text-[9px] text-slate-400 font-mono leading-relaxed">
-            <span className={`${isFailed ? 'text-red-500' : 'text-blue-500'} mr-2 font-black uppercase`}>
-              {isFailed ? 'FAILURE_REPORT:' : 'AGENT_THINKING:'}
-            </span> 
-            {test.reasoning}
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AgentStatus({ label, desc, active }) {
-  return (
-    <div className="flex items-center justify-between">
-      <div>
-        <span className={`text-[10px] font-black uppercase tracking-widest block ${active ? 'text-white' : 'text-slate-600'}`}>{label}</span>
-        <span className="text-[8px] font-bold text-slate-500 uppercase">{desc}</span>
-      </div>
-      <div className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.8)]' : 'bg-slate-800'}`} />
     </div>
   );
 }
