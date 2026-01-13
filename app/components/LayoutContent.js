@@ -5,8 +5,8 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import { LayoutGrid, Beaker, Box, Settings, ChevronRight, Moon, Sun, LogOut } from 'lucide-react';
-import { useTheme } from '../contexts/ThemeContext'; 
-import { useAuth } from '../contexts/AuthContext'; // Importamos tu useAuth de su archivo real
+import { useTheme } from '../contexts/ThemeContext.jsx'; 
+import { useAuth } from '../contexts/AuthContext.js'; // Importamos tu useAuth de su archivo real
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '../../lib/supabase.js'; // Ajusta la ruta a tu lib
 

@@ -1,200 +1,199 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  TrendingUp, TrendingDown, Clock, ShieldCheck, 
-  AlertCircle, ArrowUpRight, PlayCircle, History, Loader2, Zap,
-  Activity, BarChart3
+  X, Loader2, AlertCircle, Activity, 
+  Zap, Scan, Shield, Download, Camera 
 } from 'lucide-react';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '../../lib/supabase'; 
 import { useTheme } from '../contexts/ThemeContext';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
-
-export default function StrategicHistory({ onReplay }) {
-  const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(true);
+export default function ChaosTerminal({ suiteId, open, onClose }) {
+  const [steps, setSteps] = useState([]);
+  const [status, setStatus] = useState('running');
   const { theme } = useTheme();
-  const isDark = theme === 'dark';
+  const scrollRef = useRef(null);
+
+  // Función para descargar el screenshot actual
+  const downloadScreenshot = async () => {
+    const lastScreenshot = steps.slice().reverse().find(s => s.screenshot_url)?.screenshot_url;
+    if (!lastScreenshot) return;
+
+    try {
+      const response = await fetch(lastScreenshot);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `VIGA-EVIDENCE-${suiteId}-${new Date().getTime()}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error("Error downloading screenshot", err);
+    }
+  };
 
   useEffect(() => {
-    fetchGlobalStats();
-  }, []);
+    if (!suiteId || !open) return;
 
-  async function fetchGlobalStats() {
-    try {
-      const { data, error } = await supabase
-        .from('test_suites')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(5);
-      
-      if (error) throw error;
-      if (data) setHistory(data);
-    } catch (err) {
-      console.error("Error fetching history:", err);
-    } finally {
-      setLoading(false);
+    // Carga inicial
+    supabase
+      .from('test_steps')
+      .select('*')
+      .eq('suite_id', suiteId)
+      .order('created_at', { ascending: true })
+      .then(({ data }) => data && setSteps(data));
+
+    // Suscripción Realtime
+    const channel = supabase
+      .channel(`viga_live_${suiteId}`)
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'test_steps', 
+        filter: `suite_id=eq.${suiteId}` 
+      }, payload => {
+        setSteps(prev => {
+          if (prev.find(s => s.id === payload.new.id)) return prev;
+          return [...prev, payload.new];
+        });
+      })
+      .on('postgres_changes', {
+        event: 'UPDATE', 
+        schema: 'public', 
+        table: 'test_suites', 
+        filter: `id=eq.${suiteId}`
+      }, payload => {
+        setStatus(payload.new.status);
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [suiteId, open]);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
     }
-  }
+  }, [steps]);
 
-  const successRate = history.length > 0 
-    ? (history.filter(s => s.status === 'success' || s.status === 'completed').length / history.length) * 100 
-    : 0;
-
-  if (loading) {
-    return (
-      <div className={`mt-12 flex flex-col items-center justify-center p-20 border rounded-[40px] ${
-        isDark ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-50'
-      }`}>
-        <Loader2 className="animate-spin text-blue-500 mb-4" size={32} />
-        <p className={`text-[10px] font-black uppercase tracking-[0.3em] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-          Recuperando Inteligencia...
-        </p>
-      </div>
-    );
-  }
-
-  if (history.length === 0) {
-    return (
-      <div className={`mt-12 border border-dashed rounded-[40px] p-24 text-center animate-in fade-in duration-700 ${
-        isDark ? 'border-white/10 bg-[#080808]' : 'border-slate-300 bg-white shadow-inner'
-      }`}>
-        <Zap className={`mx-auto mb-4 ${isDark ? 'text-slate-800' : 'text-slate-200'}`} size={40}/>
-        <p className={`text-[10px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-          No hay misiones previas detectadas
-        </p>
-        <p className={`text-[9px] uppercase mt-2 ${isDark ? 'text-slate-700' : 'text-slate-300'}`}>
-          Lanza tu primera unidad operativa para generar historial estratégico.
-        </p>
-      </div>
-    );
-  }
+  if (!open) return null;
+  const isDark = theme === 'dark';
+  const currentScreenshot = steps.slice().reverse().find(s => s.screenshot_url)?.screenshot_url;
 
   return (
-    <div className="mt-12 space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-1000">
-      {/* HEADER ESTRATÉGICO */}
-      <div className="flex items-center justify-between">
+    <motion.div 
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className={`fixed inset-0 z-[10000] flex flex-col p-6 md:p-10 ${isDark ? 'bg-[#050505]' : 'bg-slate-50'}`}
+    >
+      <header className="relative z-10 flex justify-between items-center mb-10">
         <div>
-          <div className="flex items-center gap-2 mb-1">
-            <div className="h-1 w-8 bg-blue-600 rounded-full" />
-            <h3 className="text-[10px] font-black uppercase text-blue-500 tracking-[0.3em] flex items-center gap-2">
-              <History size={14}/> Fleet Deployment History
-            </h3>
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-600/10 text-blue-500 text-[10px] font-black uppercase tracking-widest border border-blue-600/20 mb-4">
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+            Live Mission Control
           </div>
-          <p className={`text-[9px] uppercase font-bold italic pl-10 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-            Auditoría de integridad para stakeholders & QA Leads
-          </p>
+          <h1 className={`text-4xl font-black uppercase tracking-tighter ${isDark ? 'text-white' : 'text-slate-900'}`}>
+            Neural <span className="text-blue-600">Overview</span>
+          </h1>
         </div>
-        
-        <div className={`flex items-center gap-4 px-4 py-2 rounded-2xl border ${isDark ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-200'}`}>
-          <div className="text-right">
-            <p className={`text-[8px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-              System Trust Score
-            </p>
-            <p className={`text-sm font-black ${successRate > 80 ? 'text-emerald-500' : 'text-orange-500'} flex items-center gap-2 justify-end`}>
-              {successRate.toFixed(1)}% 
-              {successRate > 80 ? <TrendingUp size={14}/> : <TrendingDown size={14}/>}
-            </p>
+
+        <div className="flex items-center gap-4">
+          <div className={`px-6 py-3 rounded-2xl border flex items-center gap-3 ${isDark ? 'bg-white/5 border-white/10 text-white' : 'bg-white border-slate-200 shadow-sm text-slate-900'}`}>
+            <span className="text-[10px] font-black uppercase text-slate-500">Suite:</span>
+            <span className="text-[10px] font-black uppercase tracking-widest">{status}</span>
           </div>
-          <BarChart3 size={20} className={isDark ? 'text-white/10' : 'text-slate-200'} />
-        </div>
-      </div>
-
-      {/* GRID DE MISIONES PASADAS */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {history.map((run) => (
-          <div 
-            key={run.id}
-            onClick={() => onReplay(run.base_url)}
-            className={`p-5 rounded-[24px] border transition-all group cursor-pointer relative overflow-hidden ${
-              isDark 
-                ? 'bg-[#0A0A0A] border-white/5 hover:border-blue-500/30' 
-                : 'bg-white border-slate-200 shadow-sm hover:border-blue-400 hover:shadow-md'
-            }`}
-          >
-            <div className="flex justify-between items-start mb-4 relative z-10">
-              <div className={`p-2 rounded-lg ${
-                run.status === 'success' || run.status === 'completed' 
-                ? 'bg-emerald-500/10 text-emerald-500' 
-                : 'bg-red-500/10 text-red-500'
-              }`}>
-                {run.status === 'success' || run.status === 'completed' ? <ShieldCheck size={16}/> : <AlertCircle size={16}/>}
-              </div>
-              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
-                 <span className="text-[8px] font-black uppercase text-blue-600">Relaunch</span>
-                 <div className="bg-blue-600 p-1.5 rounded-full text-white shadow-lg shadow-blue-500/40">
-                  <PlayCircle size={14}/>
-                 </div>
-              </div>
-            </div>
-            
-            <div className="mb-4">
-              <p className={`text-[10px] font-black truncate uppercase tracking-tighter mb-1 relative z-10 ${
-                isDark ? 'text-white' : 'text-slate-900'
-              }`}>
-                {run.name?.split(':')[1]?.trim() || run.name || 'Anonymous Mission'}
-              </p>
-              <p className={`text-[8px] font-mono opacity-50 truncate ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                OBJ_URL: {run.base_url}
-              </p>
-            </div>
-            
-            <div className={`flex items-center justify-between text-[8px] font-bold uppercase relative z-10 ${
-              isDark ? 'text-slate-500' : 'text-slate-400'
-            }`}>
-              <div className="flex items-center gap-2">
-                <Clock size={10}/> {new Date(run.created_at).toLocaleDateString()}
-              </div>
-              <span className={`px-2 py-0.5 rounded-md ${
-                run.status === 'success' || run.status === 'completed' 
-                ? 'bg-emerald-500/5 text-emerald-500' 
-                : 'bg-red-500/5 text-red-500'
-              }`}>
-                {run.status?.toUpperCase()}
-              </span>
-            </div>
-
-            {/* BARRA DE INTEGRIDAD MINI */}
-            <div className={`mt-4 h-[2px] w-full rounded-full overflow-hidden relative z-10 ${
-              isDark ? 'bg-white/5' : 'bg-slate-100'
-            }`}>
-              <div 
-                className={`h-full transition-all duration-1000 ${
-                  run.status === 'success' || run.status === 'completed' ? 'bg-emerald-500' : 'bg-red-500'
-                }`} 
-                style={{ width: (run.status === 'success' || run.status === 'completed') ? '100%' : '40%' }}
-              />
-            </div>
-
-            {/* EFECTO SCANNER HOVER */}
-            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-blue-500/5 to-transparent -translate-x-full group-hover:animate-[shimmer_2s_infinite] pointer-events-none" />
-          </div>
-        ))}
-
-        {/* CARD DE INSIGHTS AVANZADOS (UP-SELL) */}
-        <div className={`p-5 rounded-[24px] border border-dashed flex flex-col justify-center items-center text-center group transition-all cursor-not-allowed ${
-          isDark 
-            ? 'border-white/10 bg-white/[0.02] hover:bg-white/5' 
-            : 'border-slate-300 bg-slate-50/50 hover:bg-slate-100'
-        }`}>
-          <div className={`mb-3 p-2 rounded-full ${isDark ? 'bg-white/5 text-white/20' : 'bg-white text-slate-300 shadow-sm'}`}>
-            <Activity size={16} />
-          </div>
-          <p className={`text-[8px] font-black uppercase mb-1 ${
-            isDark ? 'text-slate-600' : 'text-slate-400'
-          }`}>
-            VIGA Global Analytics
-          </p>
-          <button className={`text-[9px] font-black flex items-center gap-2 uppercase tracking-widest transition-colors ${
-            isDark ? 'text-white/30 group-hover:text-white/60' : 'text-slate-400 group-hover:text-slate-600'
-          }`}>
-            Full Audit Log <ArrowUpRight size={12}/>
+          <button onClick={onClose} className={`p-4 rounded-2xl border ${isDark ? 'bg-white/5 border-white/10 text-white' : 'bg-white border-slate-200 shadow-sm text-slate-900'}`}>
+            <X size={20} />
           </button>
         </div>
+      </header>
+
+      <div className="relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-8 flex-1 overflow-hidden">
+        
+        {/* IZQUIERDA: STREAM DE PASOS */}
+        <div className="lg:col-span-6 flex flex-col space-y-4 overflow-hidden">
+          <div className="flex items-center justify-between px-2">
+            <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 flex items-center gap-2">
+              <Activity size={14} /> Intelligence Feed
+            </span>
+          </div>
+
+          <div ref={scrollRef} className="flex-1 overflow-y-auto pr-4 space-y-4 scrollbar-hide">
+            <AnimatePresence mode="popLayout">
+              {steps.map((step) => (
+                <motion.div key={step.id} layout initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                  className={`p-6 rounded-[32px] border flex items-start gap-6 ${isDark ? 'bg-[#080808] border-white/5' : 'bg-white border-slate-200 shadow-sm'}`}
+                >
+                  <div className={`p-4 rounded-2xl ${step.status === 'failed' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'}`}>
+                    <Zap size={20} />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className={`text-sm font-black uppercase tracking-tight mb-1 ${isDark ? 'text-white' : 'text-slate-900'}`}>{step.selector || 'Thinking...'}</h3>
+                    <p className="text-xs text-slate-500 font-medium mb-3">{step.expected_result}</p>
+                    <div className={`flex items-center gap-1.5 text-[9px] font-black uppercase ${step.status === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>
+                      <Shield size={10} /> {step.status === 'success' ? 'Verified' : 'Mutation Detected'}
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+        </div>
+
+        {/* DERECHA: MONITOR DE VISION + BOTÓN SAVE */}
+        <div className="lg:col-span-6 flex flex-col space-y-6">
+          <div className={`flex-1 rounded-[40px] border overflow-hidden relative group ${isDark ? 'bg-[#080808] border-white/5' : 'bg-white border-slate-200 shadow-xl'}`}>
+            
+            {/* OVERLAY: BOTÓN SAVE SCREENSHOT */}
+            <div className="absolute top-6 right-6 z-30 flex gap-2">
+               {currentScreenshot && (
+                 <button 
+                  onClick={downloadScreenshot}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all active:scale-95 shadow-lg shadow-blue-600/20"
+                 >
+                   <Download size={14} /> Save Evidence
+                 </button>
+               )}
+            </div>
+
+            <div className="absolute top-6 left-6 z-20">
+               <div className="px-3 py-1.5 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-white text-[9px] font-black uppercase tracking-widest flex items-center gap-2">
+                 <Camera size={12} className="text-blue-400" /> Neural Vision Feed
+               </div>
+            </div>
+
+            <AnimatePresence mode="wait">
+              {currentScreenshot ? (
+                <motion.img 
+                  key={currentScreenshot} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  src={currentScreenshot} className="w-full h-full object-cover" alt="VIGA Vision"
+                />
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center space-y-4 bg-slate-900/10">
+                  <div className="w-16 h-16 rounded-full border-4 border-blue-500/20 border-t-blue-500 animate-spin" />
+                </div>
+              )}
+            </AnimatePresence>
+            <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent pointer-events-none" />
+          </div>
+
+          {/* METRICAS INFERIORES */}
+          <div className={`p-8 rounded-[32px] border flex justify-between items-center ${isDark ? 'bg-white/[0.02] border-white/5' : 'bg-white border-slate-200'}`}>
+             <div className="flex items-center gap-4">
+               <div className="p-3 bg-blue-500/10 rounded-2xl text-blue-500"><Scan size={20}/></div>
+               <div>
+                 <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Active Cluster</p>
+                 <p className={`text-sm font-black uppercase ${isDark ? 'text-white' : 'text-slate-900'}`}>MATERIA-RUN-S1</p>
+               </div>
+             </div>
+             <div className="text-right">
+                <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Node Count</p>
+                <p className={`text-xl font-black ${isDark ? 'text-white' : 'text-slate-900'}`}>{steps.length}</p>
+             </div>
+          </div>
+        </div>
       </div>
-    </div>
+    </motion.div>
   );
 }
