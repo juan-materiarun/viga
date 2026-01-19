@@ -1,7 +1,8 @@
-import { NextResponse } from 'next/server'
-import { Client } from "@upstash/qstash"
+import { NextResponse } from 'next/server';
+import { Client } from "@upstash/qstash";
+import { processVigaTransaction } from '../../../lib/billing';
 
-const qstash = new Client({ token: process.env.QSTASH_TOKEN! })
+const qstash = new Client({ token: process.env.QSTASH_TOKEN! });
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -18,13 +19,19 @@ const normalizeUrl = (input: string): string => {
 
 export async function POST(req: Request) {
   try {
-    const { url, suite_id, goal } = await req.json()
+    const { url, suite_id, goal, userId } = await req.json()
 
     if (!url || !suite_id || !goal) {
-      return NextResponse.json(
-        { error: 'Missing url, suite_id or goal' },
-        { status: 400 }
-      )
+      return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
+    }
+
+    if (!userId) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
+
+    const billing = await processVigaTransaction(userId, 10, 'Strike Run');
+    if (!billing.success) {
+      return NextResponse.json({ error: billing.error }, { status: 402 });
     }
 
     const targetUrl = normalizeUrl(url)
@@ -52,4 +59,3 @@ export async function POST(req: Request) {
     )
   }
 }
-

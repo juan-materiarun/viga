@@ -1,39 +1,72 @@
 'use client';
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { supabase } from '../../lib/supabase.js';
 
 const AuthContext = createContext({});
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null); // NUEVO: Para company_name, vigas_balance, etc.
   const [loading, setLoading] = useState(true);
 
+  const fetchProfile = async (userId) => {
+    if (!userId) {
+      setProfile(null);
+      return;
+    }
+    try {
+      const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
+      if (error) throw error;
+      if (data) setProfile(data);
+    } catch (error) {
+      console.error("Error fetching profile:", error.message);
+      setProfile(null);
+    }
+  };
+
+  const currentUserRef = useRef(null);
+
   useEffect(() => {
-    // 1. Chequear sesión activa al cargar
-    const getSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      setUser(session?.user ?? null);
-      setLoading(false);
-    };
+    let mounted = true;
 
-    getSession();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!mounted) return;
 
-    // 2. Escuchar cambios (login/logout) en tiempo real
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      // Actualizamos la cookie para el middleware automáticamente
-      if (session) {
-        document.cookie = `viga-session=${session.access_token}; path=/; max-age=3600`;
-      } else {
-        document.cookie = "viga-session=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+      const newUser = session?.user ?? null;
+
+      // Update state only if changed
+      if (newUser?.id !== currentUserRef.current) {
+        setUser(newUser);
+        currentUserRef.current = newUser?.id;
+
+        if (newUser) {
+          setTimeout(() => {
+            if (mounted) fetchProfile(newUser.id);
+          }, 150); // Slightly longer delay for safety
+          document.cookie = `viga-session=${session.access_token}; path=/; max-age=3600`;
+        } else {
+          setProfile(null);
+          document.cookie = "viga-session=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+        }
       }
+
+      setLoading(false);
     });
 
-    return () => subscription.unsubscribe();
+    // Safety timeout: don't block the app forever if auth is slow/broken
+    const timer = setTimeout(() => {
+      if (mounted) setLoading(false);
+    }, 5000);
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+      clearTimeout(timer);
+    };
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading }}>
+    <AuthContext.Provider value={{ user, profile, loading, refreshProfile: () => fetchProfile(user?.id) }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { Client } from "@upstash/qstash";
+import { processVigaTransaction } from '../../../lib/billing';
 
 const qstash = new Client({ token: process.env.QSTASH_TOKEN! });
 
@@ -17,27 +18,36 @@ const normalizeUrl = (input: string): string => {
 
 export async function POST(req: Request) {
   try {
-    const { url, suite_id } = await req.json();
+    const { url, suite_id, userId } = await req.json();
 
     if (!url || !suite_id) {
       return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
     }
 
+    if (!userId) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
+
+    const billing = await processVigaTransaction(userId, 3, 'Scout Run');
+    if (!billing.success) {
+      return NextResponse.json({ error: billing.error }, { status: 402 });
+    }
+
     const targetUrl = normalizeUrl(url);
 
     // ✅ MODIFICACIÓN: Priorizamos el túnel de ngrok si existe en el .env
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL 
-      ? process.env.NEXT_PUBLIC_APP_URL 
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+      ? process.env.NEXT_PUBLIC_APP_URL
       : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
     console.log(`[VIGA-QSTASH] Encolando SCOUT hacia worker en: ${baseUrl}/api/worker/scout`);
 
     // 🚀 ENCOLAR: Enviamos el trabajo al Scout Worker
     await qstash.publishJSON({
-      url: `${baseUrl}/api/worker/scout`, 
-      body: { 
-        url: targetUrl, 
-        suite_id: suite_id 
+      url: `${baseUrl}/api/worker/scout`,
+      body: {
+        url: targetUrl,
+        suite_id: suite_id
       },
       // ✅ HEADER CRÍTICO PARA NGROK GRATUITO:
       headers: {
@@ -52,7 +62,7 @@ export async function POST(req: Request) {
       status: 'enqueued',
       normalized_url: targetUrl
     });
-    
+
   } catch (err: any) {
     console.error('[SCOUT ENQUEUE ERROR]:', err);
     return NextResponse.json({ error: err?.message || 'Internal error' }, { status: 500 });

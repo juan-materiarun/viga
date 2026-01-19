@@ -17,7 +17,6 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 /* ───────── LOGGING & STEPS ───────── */
 
-// Log textual updates to agent_logs
 async function vigaLog(
   suiteId: string,
   message: string,
@@ -32,29 +31,58 @@ async function vigaLog(
   })
 }
 
-// Record visual steps to test_steps (DB + Storage)
 async function recordStep(
   suiteId: string,
   page: any,
   title: string,
   status: 'success' | 'failed' | 'running' | 'warning',
-  description: string = ''
+  description: string = '',
+  actionData?: {
+    selector?: string,
+    xpath?: string,
+    actionType?: 'click' | 'type' | 'navigate',
+    payload?: string
+  }
 ) {
   const stepId = crypto.randomUUID()
-  // Capture screenshot & DOM
   const evidence = await captureEvidence(page, suiteId, stepId, false)
 
-  // Insert into DB for Frontend to see
+  // Title = Uppercase Action (e.g. "CAMBIAR TEMA")
+  // Expected Result = Reasoning/Thought (e.g. "Detecté el botón...")
   const { error } = await supabase.from('test_steps').insert({
     id: stepId,
     suite_id: suiteId,
-    title: title, // Main visible text in UI (The Thought)
-    expected_result: description, // Subtext (The Action)
+    title: title,
+    expected_result: description,
     status: status,
-    screenshot_url: evidence.screenshotUrl
+    screenshot_url: evidence.screenshotUrl,
+    selector: actionData?.selector,
+    xpath: actionData?.xpath,
+    action_type: actionData?.actionType,
+    action_payload: actionData?.payload
   })
 
   if (error) console.error('Error saving step:', error)
+}
+
+async function updateStep(
+  stepId: string,
+  suiteId: string,
+  page: any,
+  status: 'success' | 'failed' | 'running' | 'warning',
+  description: string = ''
+) {
+  // Capture new evidence for this run
+  const evidence = await captureEvidence(page, suiteId, stepId, false)
+
+  const { error } = await supabase.from('test_steps').update({
+    status: status,
+    screenshot_url: evidence.screenshotUrl,
+    expected_result: description,
+    updated_at: new Date().toISOString()
+  }).eq('id', stepId)
+
+  if (error) console.error('Error updating step:', error)
 }
 
 /* ───────── UI STABILITY ───────── */
@@ -65,24 +93,14 @@ async function waitForStableUI(page: any, timeout = 15000) {
 
   while (Date.now() - start < timeout) {
     const unstable = await page.evaluate(() => {
-      // 1. Check Loaders
-      const hasLoader =
-        document.querySelector(
-          '.loader, .spinner, .loading, [aria-busy="true"], .MuiCircularProgress-root, [data-loading="true"]'
-        ) !== null
-
-      // 2. Check Text Loading
-      const textLoading = document.body.innerText
-        .toLowerCase()
-        .match(/cargando\.\.\.|loading\.\.\.|procesando\.\.\./)
-
-      // 3. Animation checks (heuristic)
+      const hasLoader = document.querySelector('.loader, .spinner, .loading, [aria-busy="true"], .MuiCircularProgress-root, [data-loading="true"]') !== null
+      const textLoading = document.body.innerText.toLowerCase().match(/cargando\.\.\.|loading\.\.\.|procesando\.\.\./)
       return hasLoader || !!textLoading
     })
 
     if (!unstable) {
       stableCount++
-      if (stableCount > 2) return // Require 3 clean checks
+      if (stableCount > 2) return
     } else {
       stableCount = 0
     }
@@ -92,13 +110,11 @@ async function waitForStableUI(page: any, timeout = 15000) {
 
 /* ───────── DOM & SELECTORS ───────── */
 
-// Helper to generate robust selectors in the browser context
 const CLIENT_SELECTOR_SCRIPT = `
   (function() {
     function getCssPath(element) {
       if (element.id !== '') return '#' + element.id;
       if (element === document.body) return element.tagName.toLowerCase();
-      
       var ix = 0;
       var siblings = element.parentNode.childNodes;
       for (var i = 0; i < siblings.length; i++) {
@@ -108,11 +124,9 @@ const CLIENT_SELECTOR_SCRIPT = `
       }
       return null;
     }
-
     function getXPath(element) {
       if (element.id !== '') return '//*[@id="' + element.id + '"]';
       if (element === document.body) return '/html/body';
-      
       var ix = 0;
       var siblings = element.parentNode.childNodes;
       for (var i = 0; i < siblings.length; i++) {
@@ -122,7 +136,6 @@ const CLIENT_SELECTOR_SCRIPT = `
       }
       return null;
     }
-
     window.getVigaSelector = getCssPath;
     window.getVigaXPath = getXPath;
   })();
@@ -130,17 +143,6 @@ const CLIENT_SELECTOR_SCRIPT = `
 
 async function injectScripts(page: any) {
   await page.addScriptTag({ content: CLIENT_SELECTOR_SCRIPT })
-}
-
-/* ───────── UI STATE ───────── */
-
-async function getUIState(page: any) {
-  return await page.evaluate(() => {
-    return {
-      url: location.href,
-      title: document.title
-    }
-  })
 }
 
 /* ───────── ELEMENT SCAN ───────── */
@@ -157,37 +159,20 @@ type UIElement = {
 
 async function getActiveElements(page: any): Promise<UIElement[]> {
   await injectScripts(page)
-
   return await page.evaluate(() => {
-    return Array.from(
-      document.querySelectorAll(
-        'a, button, input, select, textarea, [role="button"], [tabindex="0"]'
-      )
-    )
+    return Array.from(document.querySelectorAll('a, button, input, select, textarea, [role="button"], [tabindex="0"]'))
       .map((e, i) => {
-        const el = e as HTMLElement // Explicit cast
+        const el = e as HTMLElement
         const r = el.getBoundingClientRect()
-
-        // Visibility Check & Enabled Check
         const style = window.getComputedStyle(el)
-        if (
-          r.width < 5 ||
-          r.height < 5 ||
-          style.visibility === 'hidden' ||
-          // style.display === 'none' || // Browsers handle this in visibility
-          el.hasAttribute('disabled') ||
-          el.getAttribute('aria-disabled') === 'true' ||
-          el.closest('[disabled]') // Parent disabled check
-        ) return null
+        if (r.width < 5 || r.height < 5 || style.visibility === 'hidden' || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || el.closest('[disabled]')) return null
 
-        // Safe attributes
         const placeholder = el.getAttribute('placeholder') || ''
         const aria = el.getAttribute('aria-label') || ''
         const name = el.getAttribute('name') || ''
         const role = el.getAttribute('role') || ''
         const type = el.getAttribute('type') || ''
 
-        // Find label
         let labelText = ''
         if (el.id) {
           const label = document.querySelector(`label[for="${el.id}"]`) as HTMLElement
@@ -198,42 +183,65 @@ async function getActiveElements(page: any): Promise<UIElement[]> {
           labelText = label?.innerText || label?.textContent || ''
         }
 
-        // Generate Selector
         // @ts-ignore
         let selector = window.getVigaSelector(el)
         // @ts-ignore
         const xpath = window.getVigaXPath(el)
 
-        // Refine selector if simple ID/Name exists
         if (el.id) selector = `#${el.id}`
         else if (name) selector = `${el.tagName.toLowerCase()}[name="${name}"]`
 
         const cleanText = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 100)
-
-        // Semantic Hint for AI
         const hint = [labelText, placeholder, aria, name, role, cleanText].filter(Boolean).join(' | ')
 
-        return {
-          i,
-          tag: el.tagName.toLowerCase(),
-          text: cleanText,
-          hint: hint,
-          selector,
-          xpath,
-          attributes: { type, name, id: el.id }
-        }
+        return { i, tag: el.tagName.toLowerCase(), text: cleanText, hint: hint, selector, xpath, attributes: { type, name, id: el.id } }
       })
       .filter(Boolean) as UIElement[]
   })
 }
 
-// Wrapper to retry if 0 elements found (resilience)
-async function getSafeActiveElements(page: any, retries = 5): Promise<UIElement[]> {
-  for (let i = 0; i < retries; i++) {
-    const elements = await getActiveElements(page)
-    if (elements.length > 0) return elements
-    await sleep(2000) // Increase wait to 2s per retry (Total 10s)
+// ─── SMART WAITING CORE (UNIVERSAL) ───
+
+async function smartWaitForElements(page: any, suiteId: string): Promise<UIElement[]> {
+  // 1. First, try standard scan
+  let elements = await getActiveElements(page)
+  if (elements.length > 0) return elements
+
+  // 2. If empty, enter Smart Poll (60s)
+  await vigaLog(suiteId, '⚠️ Página vacía. Iniciando "Espera Profunda" (hasta 60s)...', 'warning')
+
+  const POLL_MAX = 60000
+  const POLL_INTERVAL = 2000
+  let waited = 0
+  const currentUrl = page.url()
+
+  while (waited < POLL_MAX) {
+    await sleep(POLL_INTERVAL)
+    waited += POLL_INTERVAL
+
+    // Navigation Check
+    if (page.url() !== currentUrl) {
+      await vigaLog(suiteId, `🔄 Navegación detectada: ${page.url()}`, 'info')
+      // Don't recurse infinitely, just one fresh check after nav
+      await waitForStableUI(page)
+      return await getActiveElements(page)
+    }
+
+    // Element Check
+    elements = await getActiveElements(page)
+    if (elements.length > 0) {
+      await vigaLog(suiteId, `👀 Elementos aparecieron tras ${waited / 1000}s!`, 'success')
+      return elements
+    }
+
+    // Heartbeat
+    if (waited % 10000 === 0) {
+      await vigaLog(suiteId, `⏳ Esperando carga... (${waited / 1000}s)`, 'info')
+    }
   }
+
+  await vigaLog(suiteId, `🛑 Tiempo agotado (${POLL_MAX / 1000}s). Página inactiva.`, 'error')
+  await recordStep(suiteId, page, 'Falló: Timeout (60s)', 'failed', 'No se encontraron elementos interactivos tras espera profunda.')
   return []
 }
 
@@ -251,32 +259,30 @@ export async function runScoutAgent(url: string, suiteId: string) {
     await waitForStableUI(page)
     await injectScripts(page)
 
-    // Get all elements with the improved scanner
-    const elements = await getSafeActiveElements(page)
+    // USE SMART WAIT (Now Scout is also resilient to slow apps)
+    const elements = await smartWaitForElements(page, suiteId)
 
     await vigaLog(suiteId, `👀 Encontrados ${elements.length} elementos interactivos`, 'info')
 
     let inserted = 0
     const batchSize = 10
 
-    // Process in chunks to avoid blocking
     for (let i = 0; i < elements.length; i += batchSize) {
       const chunk = elements.slice(i, i + batchSize)
 
       for (const el of chunk) {
         const { error } = await supabase.from('discovered_elements').upsert({
           suite_id: suiteId,
-          selector: el.selector, // Ideally store xpath too if schema allowed, but selector is primary
+          selector: el.selector,
           tag_name: el.tag,
           text: el.text || el.hint,
           url: url,
           status: 'active',
           priority: 1,
-          // Additional metadata
           identity_data: {
             hint: el.hint,
             attributes: el.attributes,
-            xpath: el.xpath // Store xpath in JSONB
+            xpath: el.xpath
           }
         }, { onConflict: 'suite_id, selector' })
 
@@ -284,14 +290,12 @@ export async function runScoutAgent(url: string, suiteId: string) {
       }
     }
 
-    await vigaLog(
-      suiteId,
-      `📦 Scout DB: ${inserted} elementos registrados/actualizados`,
-      'success'
-    )
+    await vigaLog(suiteId, `📦 Scout DB: ${inserted} elementos registrados`, 'success')
+    await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId)
   } catch (e: any) {
     console.error(e)
     await vigaLog(suiteId, `❌ Scout Error: ${e.message}`, 'error')
+    await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
     throw e
   } finally {
     await page.close()
@@ -301,27 +305,19 @@ export async function runScoutAgent(url: string, suiteId: string) {
 /* ───────── CHAOS AGENT ───────── */
 
 const CHAOS_SYSTEM = `
-Eres un Tester de Chaos Inteligente y Universal.
-Tu objetivo es explorar la MAYOR cantidad de funcionalidades ÚNICAS posibles.
+Eres un Tester de Chaos Inteligente. Objetivo: Explorar funcionalidades ÚNICAS.
 
-Reglas de Oro:
-1. **PRIORIDAD MÁXIMA**: Interactúa con elementos que tengan "visited": false.
-2. **NO REPETIR**: Si un elemento ya fue visitado ("visited": true), IGNÓRALO a menos que sea crucial para navegar (ej: 'Siguiente').
-3. **FINISH**: Si TODOS los elementos visibles ya están visitados ("visited": true) y no hay nada nuevo que hacer, responde con action: "finish".
-4. **Contexto**: Lee los "hints". Si pide URL, pon una válida.
-5. **Variedad**: Prueba distintos caminos.
+Reglas:
+1. Prioridad: "visited": false.
+2. Si todo visited: FINISH.
 
-Recibes:
-- Estado actual (URL, título).
-- Elementos interactivos (con estado 'visited').
-- **Historial**: Acciones recientes.
-
-Responde SOLO JSON:
+Responde JSON:
 {
-  "thought": "Título breve (ej: 'Probando botón X' o 'Todo explorado, finalizando')",
+  "title": "TÍTULO CORTO Y CLARO (Ej: CAMBIAR IDIOMA)",
+  "thought": "Explicación detallada de por qué haces esto...",
   "index": number (opcional si finish),
   "action": "click" | "type" | "finish",
-  "payload": "string" (solo para type)
+  "payload": "string"
 }
 `
 
@@ -345,51 +341,10 @@ export async function runChaosAgent(url: string, suiteId: string) {
     while (actions < MAX_ACTIONS) {
       await waitForStableUI(page)
 
-      const elements = await getSafeActiveElements(page) // Waits up to 10s
+      const elements = await smartWaitForElements(page, suiteId)
       const currentUrl = page.url()
 
-      if (elements.length === 0) {
-        // Smart Polling Logic for Slow Pages (up to 60s)
-        await vigaLog(suiteId, '⚠️ Página vacía. Iniciando "Espera Profunda" (hasta 60s)...', 'warning')
-
-        const POLL_MAX = 60000
-        const POLL_INTERVAL = 2000
-        let waited = 0
-        let found = false
-
-        while (waited < POLL_MAX) {
-          await sleep(POLL_INTERVAL)
-          waited += POLL_INTERVAL
-
-          const currentUrlCheck = page.url()
-          if (currentUrlCheck !== currentUrl) {
-            await vigaLog(suiteId, `🔄 Navegación detectada: ${currentUrlCheck}`, 'info')
-            found = true // Break to let main loop handle new URL
-            break
-          }
-
-          // @ts-ignore
-          const retryElements = await getActiveElements(page)
-          if (retryElements.length > 0) {
-            // @ts-ignore
-            elements.push(...retryElements)
-            found = true
-            await vigaLog(suiteId, `👀 Elementos aparecieron tras ${waited / 1000}s!`, 'success')
-            break
-          }
-
-          if (waited % 10000 === 0) {
-            await vigaLog(suiteId, `⏳ Esperando carga... (${waited / 1000}s)`, 'info')
-          }
-        }
-
-        if (!found) {
-          await vigaLog(suiteId, `🛑 Tiempo agotado (${POLL_MAX / 1000}s). Página inactiva.`, 'error')
-          // CAPTURE FAILURE EVIDENCE
-          await recordStep(suiteId, page, 'Falló: Timeout (60s)', 'failed', 'La página no mostró elementos interactivos tras 60 segundos de espera profunda.')
-          break
-        }
-      }
+      if (elements.length === 0) break
 
       const stateHash = crypto.createHash('md5').update(currentUrl + elements.length).digest('hex')
       if (!visitedStates.has(stateHash)) {
@@ -397,18 +352,11 @@ export async function runChaosAgent(url: string, suiteId: string) {
         await vigaLog(suiteId, `📍 Nuevo estado: ${currentUrl} (${elements.length} elems)`, 'info')
       }
 
-      // MARK VISITED ELEMENTS
       const mappedElements = elements.map(e => {
-        const fingerprint = `${currentUrl}::${e.hint}::${e.tag}` // Unique ID for visual element
-        return {
-          i: e.i,
-          tag: e.tag,
-          hint: e.hint,
-          visited: visitedFingerprints.has(fingerprint)
-        }
+        const fingerprint = `${currentUrl}::${e.hint}::${e.tag}`
+        return { i: e.i, tag: e.tag, hint: e.hint, visited: visitedFingerprints.has(fingerprint) }
       })
 
-      // Count unvisited to help AI decide termination
       const unvisitedCount = mappedElements.filter(e => !e.visited).length
 
       const context = JSON.stringify({
@@ -421,15 +369,11 @@ export async function runChaosAgent(url: string, suiteId: string) {
 
       const decision = await callGroqJSON(llmCtx, CHAOS_SYSTEM, context)
 
-      if (!decision) {
-        console.warn('[CHAOS] Invalid LLM decision', decision)
-        break
-      }
+      if (!decision) { break }
 
-      // HANDLE FINISH
       if (decision.action === 'finish') {
         await vigaLog(suiteId, '✅ Chaos: Cobertura completada.', 'success')
-        await recordStep(suiteId, page, 'Exploración Finalizada', 'success', decision.thought || 'No hay más elementos nuevos que probar.')
+        await recordStep(suiteId, page, 'EXPLORACIÓN COMPLETADA', 'success', decision.thought || 'No hay más elementos nuevos que probar.')
         break
       }
 
@@ -439,78 +383,61 @@ export async function runChaosAgent(url: string, suiteId: string) {
 
       if (target) {
         const fingerprint = `${currentUrl}::${target.hint}::${target.tag}`
-        const actionDesc = `${decision.action} en "${target.hint}" (payload: ${decision.payload || 'N/A'})`
-        await vigaLog(suiteId, `👉 [${actions + 1}/${MAX_ACTIONS}] ${actionDesc}`, 'info')
+        const actionDesc = `${decision.action} en "${target.hint}"`
+        await vigaLog(suiteId, `👉 [${actions + 1}/${MAX_ACTIONS}] ${decision.title || actionDesc}`, 'info')
 
-        history.push(`${decision.thought} (${actionDesc})`)
+        history.push(`${decision.title}: ${decision.thought}`)
 
         try {
           if (decision.action === 'type') {
-            try {
-              await page.fill(target.selector, decision.payload || 'Test Value')
-            } catch (e) {
-              if (target.xpath) await page.fill(`xpath=${target.xpath}`, decision.payload || 'Test Value')
-              else throw e
-            }
+            try { await page.fill(target.selector, decision.payload || 'Val') }
+            catch (e) { if (target.xpath) await page.fill(`xpath=${target.xpath}`, decision.payload || 'Val'); else throw e }
           } else {
-            try {
-              await page.click(target.selector, { timeout: 5000 })
-            } catch (e) {
-              if (target.xpath) await page.click(`xpath=${target.xpath}`, { timeout: 5000 })
-              else throw e
-            }
+            try { await page.click(target.selector, { timeout: 5000 }) }
+            catch (e) { if (target.xpath) await page.click(`xpath=${target.xpath}`, { timeout: 5000 }); else throw e }
           }
 
-          visitedFingerprints.add(fingerprint) // MARK AS VISITED
+          visitedFingerprints.add(fingerprint)
           actions++
+          await sleep(3000)
 
-          await sleep(3000) // WAIT FOR ANIMATION (Snapshot delay)
-
-          await recordStep(suiteId, page, decision.thought || actionDesc, 'success', actionDesc)
-
+          // USE TITLE + THOUGHT properly + SAVE SELECTOR for regression
+          await recordStep(suiteId, page, decision.title || actionDesc, 'success', decision.thought || actionDesc, {
+            selector: target.selector,
+            xpath: target.xpath,
+            actionType: decision.action as 'click' | 'type',
+            payload: decision.payload
+          })
         } catch (err: any) {
-          await vigaLog(suiteId, `⚠️ Fallo acción: ${err.message}`, 'warning')
-          await recordStep(suiteId, page, `Error: ${decision.thought}`, 'failed', `${actionDesc} -> ${err.message}`)
+          await vigaLog(suiteId, `⚠️ Fallo: ${err.message}`, 'warning')
+          await recordStep(suiteId, page, `ERROR: ${decision.title}`, 'failed', err.message)
         }
-      } else {
-        await vigaLog(suiteId, '⚠️ AI alucinó índice, escogiendo aleatorio...', 'warning')
-        const random = elements[Math.floor(Math.random() * elements.length)]
-        try { await page.click(random.selector, { timeout: 2000 }) } catch (e) { }
       }
-
       await sleep(1000)
     }
-
     await vigaLog(suiteId, '🏁 Chaos Session Finalizada', 'success')
+    await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId)
   } catch (e: any) {
-    await vigaLog(suiteId, `☠️ Chaos Crashed: ${e.message}`, 'error')
+    await recordStep(suiteId, page, 'FATAL ERROR', 'failed', e.message)
+    await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
     throw e
   } finally {
     await page.close()
   }
 }
 
-/* ───────── STRIKE AGENT (REACT LOOP) ───────── */
+/* ───────── STRIKE AGENT ───────── */
 
 const STRIKE_SYSTEM = `
-Eres un Agente Autónomo Web (ReAct).
-Tu misión: Cumplir el objetivo del usuario.
-Recibes el estado actual de la página y una lista de elementos.
+Eres un Agente Autónomo Web (ReAct). Objetivo: "{goal}"
 
-Instrucciones:
-1. Analiza el estado actual y si te acerca al objetivo.
-2. Si el objetivo está cumplido, responde con action: "finish".
-3. Si necesitas más información, responde con action: "scroll" o "wait".
-4. Para interactuar, elige el índice (index) del elemento más prometedor.
+INSTRUCCIONES DE RESPUESTA:
+1. "title": TÍTULO CORTO DEL PASO (Ej: "ACTIVAR MODO OSCURO").
+2. "thought": Razonamiento (Ej: "Veo el botón Light, lo clickearé para cambiar...").
+3. Si el objetivo está cumplido visualmente -> Action: "finish".
 
-Responde SOLO en JSON:
-{
-  "thought": "Razonamiento paso a paso...",
-  "status": "active" | "completed" | "failed",
-  "action": "click" | "type" | "wait" | "finish",
-  "index": number (opcional),
-  "payload": "texto" (solo para type)
-}
+JSON:
+{ "title": "...", "thought": "...", "status": "active"|"completed"|"failed", "action": "click"|"type"|"wait"|"finish", "index": number, "payload": "..." }
 `
 
 export async function runStrikeAgent(url: string, suiteId: string, goal: string) {
@@ -526,41 +453,38 @@ export async function runStrikeAgent(url: string, suiteId: string, goal: string)
 
     let steps = 0
     const MAX_STEPS = 20
+    let lastAction = ''
 
     while (steps < MAX_STEPS) {
       await waitForStableUI(page)
-      const elements = await getSafeActiveElements(page)
+      const elements = await smartWaitForElements(page, suiteId)
+      if (elements.length === 0) break
 
-      // Context
       const context = JSON.stringify({
         objective: goal,
         current_url: page.url(),
         page_title: await page.title(),
+        last_action: lastAction,
         visible_elements: elements.map(e => ({ i: e.i, tag: e.tag, hint: e.hint }))
       })
 
-      const plan = await callGroqJSON(llmCtx, STRIKE_SYSTEM, context)
+      const systemPrompt = STRIKE_SYSTEM.replace('{goal}', goal)
+      const plan = await callGroqJSON(llmCtx, systemPrompt, context)
 
-      if (!plan) {
-        await vigaLog(suiteId, '🧠 Brain Freeze (LLM no respondió)', 'error')
-        break
-      }
+      if (!plan) break
 
-      await vigaLog(suiteId, `🤔 (${steps + 1}) ${plan.thought}`, 'info')
+      await vigaLog(suiteId, `🤔 (${steps + 1}) ${plan.title || plan.thought}`, 'info')
 
       if (plan.status === 'completed' || plan.action === 'finish') {
         await vigaLog(suiteId, '✅ Objetivo Cumplido', 'success')
-        await recordStep(suiteId, page, 'Objetivo Cumplido', 'success', plan.thought)
+        await recordStep(suiteId, page, 'OBJETIVO CUMPLIDO', 'success', plan.thought)
         break
       }
-
       if (plan.status === 'failed') {
-        await vigaLog(suiteId, '❌ El agente se rinde', 'error')
-        await recordStep(suiteId, page, 'Misión Fallida', 'failed', plan.thought)
+        await recordStep(suiteId, page, 'MISIÓN FALLIDA', 'failed', plan.thought)
         break
       }
 
-      // Execute Action
       steps++
       try {
         if (plan.action === 'wait') {
@@ -568,39 +492,139 @@ export async function runStrikeAgent(url: string, suiteId: string, goal: string)
         } else if (plan.index !== undefined) {
           const target = elements.find(e => e.i === plan.index)
           if (target) {
-            // Try CSS then XPath
+            lastAction = `${plan.action} on ${target.hint}`
+
             if (plan.action === 'type') {
-              try {
-                await page.fill(target.selector, plan.payload || '')
-              } catch (e) {
-                if (target.xpath) await page.fill(`xpath=${target.xpath}`, plan.payload || '')
-                else throw e
-              }
+              try { await page.fill(target.selector, plan.payload || '') }
+              catch (e) { if (target.xpath) await page.fill(`xpath=${target.xpath}`, plan.payload || ''); else throw e }
             } else {
-              try {
-                await page.click(target.selector, { timeout: 5000 })
-              } catch (e) {
-                if (target.xpath) await page.click(`xpath=${target.xpath}`, { timeout: 5000 })
-                else throw e
-              }
+              try { await page.click(target.selector, { timeout: 5000 }) }
+              catch (e) { if (target.xpath) await page.click(`xpath=${target.xpath}`, { timeout: 5000 }); else throw e }
             }
-
-            // Wait for reaction
             await sleep(3000)
-
-            // Capture after action
-            await recordStep(suiteId, page, plan.thought, 'success', `${plan.action} ${target.hint}`)
-          } else {
-            // Retry scan if element missing (caused by stale state)
-            await vigaLog(suiteId, '⚠️ Elemento perdido, re-escaneando...', 'warning')
-            await waitForStableUI(page)
+            // USE TITLE properly + SAVE SELECTOR for regression
+            await recordStep(suiteId, page, plan.title || plan.thought, 'success', plan.thought, {
+              selector: target.selector,
+              xpath: target.xpath,
+              actionType: plan.action as 'click' | 'type',
+              payload: plan.payload
+            })
           }
         }
       } catch (err: any) {
-        await vigaLog(suiteId, `⚠️ Error ejecutando acción: ${err.message}`, 'warning')
-        await recordStep(suiteId, page, 'Error ejecutando acción', 'failed', err.message)
+        await recordStep(suiteId, page, 'ERROR DE EJECUCIÓN', 'failed', err.message)
       }
     }
+    await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId)
+  } catch (e: any) {
+    await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
+    throw e
+  } finally {
+    await page.close()
+  }
+}
+
+/* ───────── REPLAY AGENT (SELF-HEALING REGRESSION) ───────── */
+
+export async function runReplayAgent(url: string, suiteId: string, recordedSteps: any[]) {
+  const browser = await getBrowser()
+  const page = await browser.newPage()
+  const llmCtx = createLLMContext()
+
+  await vigaLog(suiteId, `🔁 Iniciando Regresión: ${recordedSteps.length} pasos.`, 'info')
+
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded' })
+    try { await page.waitForLoadState('networkidle', { timeout: 8000 }) } catch (e) { }
+
+    for (let idx = 0; idx < recordedSteps.length; idx++) {
+      const step = recordedSteps[idx]
+      await vigaLog(suiteId, `▶️ Paso ${idx + 1}: ${step.title}`, 'info')
+      await waitForStableUI(page)
+
+      let success = false
+      let healedSelector = null
+
+      try {
+        // STRATEGY 1: Try saved selector (FAST PATH - No AI)
+        if (step.selector || step.xpath) {
+          try {
+            const targetSelector = step.selector || `xpath=${step.xpath}`
+
+            if (step.action_type === 'type') {
+              await page.fill(targetSelector, step.action_payload || '', { timeout: 3000 })
+            } else {
+              await page.click(targetSelector, { timeout: 3000 })
+            }
+
+            success = true
+            await vigaLog(suiteId, `✅ Selector directo funcionó`, 'success')
+
+          } catch (selectorError) {
+            // Selector failed, try AI healing
+            await vigaLog(suiteId, `⚠️ Selector roto. Intentando auto-curación...`, 'warning')
+          }
+        }
+
+        // STRATEGY 2: AI Self-Healing (if selector failed or missing)
+        if (!success) {
+          const elements = await smartWaitForElements(page, suiteId)
+
+          const HEAL_SYSTEM = `
+                    Eres VIGA SELF-HEAL. El selector guardado falló.
+                    Busca el elemento que mejor coincida con: "${step.title}: ${step.expected_result}"
+                    Responde JSON: { "index": number, "confidence": "high"|"low" }
+                  `
+
+          const context = JSON.stringify({
+            target_description: `${step.title}: ${step.expected_result}`,
+            visible_elements: elements.map(e => ({ i: e.i, tag: e.tag, hint: e.hint }))
+          })
+
+          const healing = await callGroqJSON(llmCtx, HEAL_SYSTEM, context)
+
+          if (healing && healing.index !== undefined) {
+            const newTarget = elements.find(e => e.i === healing.index)
+
+            if (newTarget) {
+              if (step.action_type === 'type') {
+                await page.fill(newTarget.selector, step.action_payload || '')
+              } else {
+                await page.click(newTarget.selector)
+              }
+
+              success = true
+              healedSelector = newTarget.selector
+
+              // UPDATE DB with new selector (LEARNING)
+              await supabase.from('test_steps').update({
+                selector: newTarget.selector,
+                xpath: newTarget.xpath
+              }).eq('id', step.id)
+
+              await vigaLog(suiteId, `🔧 Auto-curado! Nuevo selector guardado.`, 'success')
+            }
+          }
+        }
+
+        await sleep(2000)
+
+        if (success) {
+          await updateStep(step.id, suiteId, page, 'success', healedSelector ? 'Auto-curado exitosamente' : 'Regresión OK')
+        } else {
+          await updateStep(step.id, suiteId, page, 'failed', 'No se pudo ejecutar ni auto-curar')
+        }
+
+      } catch (e: any) {
+        await updateStep(step.id, suiteId, page, 'failed', `Error: ${e.message}`)
+      }
+    }
+
+    await vigaLog(suiteId, '✅ Regresión Finalizada', 'success')
+    await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId)
+  } catch (e: any) {
+    await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
+    throw e
   } finally {
     await page.close()
   }
