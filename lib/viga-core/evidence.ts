@@ -13,15 +13,18 @@ export async function captureEvidence(
   page: Page,
   suiteId: string,
   stepId: string,
+  fullPage: boolean = false, // FIX: Por defecto false para evitar "fideos"
   meta: Record<string, any> = {}
 ) {
   const html = await page.content()
   const domHash = crypto.createHash('sha256').update(html).digest('hex')
 
-  const screenshot = await page.screenshot({ fullPage: true })
+  // FIX: Captura solo el viewport actual para que la IA vea con claridad
+  const screenshot = await page.screenshot({ fullPage: fullPage })
 
   const basePath = `${suiteId}/${stepId}`
 
+  // Subida de evidencia a Supabase
   await supabase.storage.from(BUCKET).upload(
     `${basePath}.png`,
     screenshot,

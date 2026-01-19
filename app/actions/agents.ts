@@ -14,196 +14,214 @@ const supabase = createClient(
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-/* ───────── FILTRO DE TOKENS (EL SECRETO) ───────── */
-// Limpiamos el objeto UI para que ocupe lo mínimo posible en el prompt.
-function getMiniUI(elements: any[]) {
-  return elements.map(el => ({
-    i: el.i,
-    t: el.tag,
-    txt: el.text.slice(0, 15),
-    en: el.isEnabled ? 1 : 0
-  })).slice(0, 15); // Solo enviamos 15 elementos para no saturar TPM
+/* ───────── CONFIGURACIÓN DE ROTACIÓN ───────── */
+const GROQ_KEYS = [
+  process.env.GROQ_API_KEY_1,
+  process.env.GROQ_API_KEY_2,
+  process.env.GROQ_API_KEY_3
+].filter(Boolean) as string[];
+
+let keyCounter = 0;
+function getRotatedKey() {
+  if (GROQ_KEYS.length === 0) return process.env.GROQ_API_KEY || "";
+  const key = GROQ_KEYS[keyCounter % GROQ_KEYS.length];
+  keyCounter++;
+  return key;
 }
 
-/* ───────── VIGA SHIELD: RESILIENCIA Y COOLDOWN ───────── */
-async function vigaShield(fn: () => Promise<any>, context: string, maxRetries = 2) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      // Respiro obligatorio de 4s para vaciar el "bucket" de tokens
-      await sleep(4000); 
-      return await fn();
-    } catch (err: any) {
-      if (err.message?.includes('429') || err.status === 429) {
-        console.warn(`[VIGA-SHIELD] 🛑 Saturación de API. Pausa de limpieza: 25s.`);
-        await sleep(25000); 
-        return null; // Devolvemos null para que el agente use heurística
-      }
-      console.error(`[VIGA-ERROR] ${context}:`, err.message);
-      return null;
-    }
-  }
-  return null;
+/* ───────── TELEMETRÍA ───────── */
+async function vigaLog(suiteId: string, message: string, level: 'info' | 'success' | 'warning' | 'error' = 'info') {
+  const shortId = suiteId.slice(-4);
+  console.log(`[${shortId}] ${message}`);
+  await supabase.from('agent_logs').insert({
+    suite_id: suiteId,
+    message: `[${shortId}] ${message}`,
+    level
+  });
 }
 
-/* ───────── AGENTE 1: SCOUT (MAPEO) ───────── */
+/* ───────── UTILIDADES DE ADN (Súper Sensible) ───────── */
+async function getPageDNA(page: any) {
+  return await page.evaluate(() => {
+    const body = document.body;
+    const style = window.getComputedStyle(body);
+    const visibleText = body.innerText.slice(0, 1500);
+
+    return {
+      bg: style.backgroundColor,
+      lang: document.documentElement.lang || "unknown",
+      domSize: body.innerHTML.length,
+      url: window.location.href,
+      textHash: visibleText.length + visibleText.slice(0, 40) + visibleText.slice(-40), // Huella única de texto
+      themeData: document.documentElement.className + body.className,
+      hasLoader: !!document.querySelector('.loader, .spinner, .loading, [aria-busy="true"]') ||
+        body.innerHTML.toLowerCase().includes('cargando')
+    };
+  });
+}
+
+function getCleanUrl(url: string) {
+  try {
+    const u = new URL(url.startsWith('http') ? url : `https://${url}`);
+    return u.hostname.replace('www.', '') + u.pathname.replace(/\/$/, "");
+  } catch (e) { return url.toLowerCase().replace(/\/$/, ""); }
+}
+
+function generateSemanticId(el: any) {
+  if (!el) return `unknown-${crypto.randomUUID().slice(0, 8)}`;
+  const tag = (el.tag || el.tagName || 'node').toLowerCase();
+  const text = (el.text || el.textContent || '').replace(/[0-9]/g, '').toLowerCase().trim();
+  const raw = `${tag}-${text}`;
+  return crypto.createHash('md5').update(raw).digest('hex');
+}
+
+async function getActiveElements(page: any) {
+  return await page.evaluate(() => {
+    const forbidden = ['.viga-monitor', '.chaos-terminal', '#control-panel', '.navbar-viga'];
+    return Array.from(document.querySelectorAll('a,button,input,select,textarea,[role="button"],.nav-item,.dropdown'))
+      .filter(e => !forbidden.some(selector => e.closest(selector)))
+      .map((e, i) => {
+        const rect = e.getBoundingClientRect();
+        return {
+          i, tag: e.tagName,
+          text: (e.textContent?.trim() || e.getAttribute('placeholder') || e.getAttribute('aria-label') || "").slice(0, 50),
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+          isVisible: rect.width > 0 && rect.height > 0,
+        };
+      }).filter(el => el.isVisible && el.text.length > 0);
+  });
+}
+
+const SMART_BRAIN_SYSTEM = `Eres un Agente de QA Automático. Tu meta es explorar y validar flujos de usuario.
+REGLAS:
+1. Lee el feedback de ADN: si una acción no cambió nada, NO la repitas.
+2. Explora metódicamente todos los botones, menús y formularios.
+3. El éxito se define por cambios en la URL, el idioma, el tema visual o el contenido.
+Responde estrictamente en JSON: { "index": number, "action": "click"|"type", "payload": "string", "test_name": "string", "reasoning": "string" }`;
+
+/* ───────── AGENTE 1: SCOUT ───────── */
 export async function runScoutAgent(url: string, suiteId: string) {
-  const browser = await getBrowser()
-  const page = await browser.newPage()
+  const safeUrl = url.startsWith('http') ? url : `https://${url}`;
+  const cleanUrl = getCleanUrl(safeUrl);
+  const browser = await getBrowser();
+  const page = await browser.newPage();
   try {
-    await page.goto(url, { waitUntil: 'networkidle' })
-    const elements = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('a,button,input,select,textarea'))
-        .map((el, i) => ({
-          i,
-          tag: el.tagName,
-          text: (el.textContent || (el as any).placeholder || "").trim().slice(0, 30),
-        })).filter(el => el.text !== "" || el.tag === 'INPUT')
-    )
-    for (const el of elements.slice(0, 20)) {
-      await supabase.from('discovered_elements').insert({
-        suite_id: suiteId, tag_name: el.tag, selector: el.tag.toLowerCase(), text: el.text, status: 'discovered'
-      })
-    }
-    const ev = await captureEvidence(page, suiteId, crypto.randomUUID())
-    await supabase.from('test_steps').insert({
-      suite_id: suiteId, action_type: 'scout', selector: 'SURFACE_SCAN',
-      expected_result: `Mapeo completado. ${elements.length} elementos encontrados.`,
-      status: 'success', screenshot_url: ev.screenshotUrl
-    })
-  } finally {
-    await page.close();
-  }
+    await vigaLog(suiteId, `🛰️ Scout mapeando: ${cleanUrl}`, 'info');
+    await page.goto(safeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    const elements = await getActiveElements(page);
+    const rows = elements.map(el => ({
+      suite_id: suiteId, url: cleanUrl, tag_name: el.tag,
+      text: el.text.slice(0, 80), semantic_id: generateSemanticId(el),
+      identity_data: JSON.parse(JSON.stringify(el)), status: 'pending'
+    }));
+    await supabase.from('discovered_elements').delete().eq('url', cleanUrl);
+    await supabase.from('discovered_elements').insert(rows);
+  } finally { await page.close(); }
 }
 
-/* ───────── AGENTE 2: CHAOS (NAVEGACIÓN LENTA Y AUTÓNOMA) ───────── */
+/* ───────── AGENTE 2: CHAOS (EVOLUTIVO + AGNÓSTICO) ───────── */
 export async function runChaosAgent(url: string, suiteId: string) {
-  const browser = await getBrowser()
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
-  const page = await context.newPage()
-  
-  const state = {
-    triedUids: new Set<string>(),
-    history: [] as string[],
-    isFinished: false,
-    bugs: [],
-    stepCount: 0
-  }
+  const browser = await getBrowser();
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+
+  let stepCount = 0;
+  let exhaustedElements = new Set<string>(); // Memoria de elementos probados
+  let lastActionLog = "Inicio de exploración.";
 
   try {
-    await page.goto(url, { waitUntil: 'networkidle' })
-    await sleep(5000);
+    await page.goto(url, { waitUntil: 'networkidle' });
 
-    while (!state.isFinished && state.stepCount < 40) {
-      state.stepCount++;
+    while (stepCount < 25) {
+      const dnaBefore = await getPageDNA(page);
+      const allElements = await getActiveElements(page);
 
-      const rawUI = await page.evaluate(() => 
-        Array.from(document.querySelectorAll('a,button,input,select,textarea,[role="button"]'))
-          .map((e, i) => ({
-            i, tag: e.tagName,
-            text: (e.textContent || (e as any).placeholder || "").trim().slice(0, 30),
-            isEnabled: !(e as any).disabled,
-            isVisible: e.getBoundingClientRect().width > 0,
-            uid: `${e.tagName}-${i}`
-          })).filter(el => el.isVisible).slice(0, 30)
-      )
+      // Filtramos para que la IA solo vea lo que no ha probado aún
+      const available = allElements.filter(el => !exhaustedElements.has(`${el.tag}-${el.text}`));
 
-      if (rawUI.length === 0) { await page.reload(); continue; }
-
-      // 1. Decisión de la IA con UI Minificada
-      const thought = await vigaShield(() => callGroqJSON(
-        `MODO CAOS. UI: ${JSON.stringify(getMiniUI(rawUI))}.JSON: { "reasoning": "string", "should_stop": boolean, "index": number, "action": "click"|"type", "payload": "string", "test_name": "string" }`,
-        "Chaos Decision"
-      ), "Brain Thinking");
-
-      // 2. MODO INSTINTO (Si la IA no responde por tokens)
-      let decision = thought;
-      if (!decision) {
-        console.log("⚠️ API Saturada. VIGA usa Instinto Heurístico.");
-        const untried = rawUI.find(el => el.isEnabled && !state.triedUids.has(el.uid));
-        if (!untried) break;
-        decision = { index: untried.i, action: untried.tag === 'INPUT' ? 'type' : 'click', payload: "VIGA_DATA", test_name: "AUTOPILOTO", should_stop: false };
+      if (available.length === 0) {
+        await vigaLog(suiteId, "🏁 No quedan elementos nuevos por explorar.", "success");
+        break;
       }
 
-      if (decision.should_stop) break;
-
-      // 3. Ejecución Lenta
-      const target = rawUI.find(el => el.i === decision.index) || rawUI[0];
-      const stepId = crypto.randomUUID();
-
-      try {
-        const locator = page.locator(`${target.tag.toLowerCase()}`).nth(rawUI.filter(e => e.tag === target.tag).findIndex(e => e.i === target.i));
+      const contextPrompt = `
+        URL: ${dnaBefore.url}
+        FEEDBACK ÚLTIMA ACCIÓN: ${lastActionLog}
         
-        if (await locator.isDisabled()) continue;
+        ELEMENTOS DISPONIBLES (Nuevos):
+        ${JSON.stringify(available.slice(0, 15).map(e => ({ i: e.i, txt: e.text })))}
+      `;
 
-        if (decision.action === 'type') {
-          await locator.fill(decision.payload || "VIGA_CHAOS");
-          await page.keyboard.press('Enter');
+      const decision = await callGroqJSON(SMART_BRAIN_SYSTEM, contextPrompt, getRotatedKey());
+      if (!decision) break;
+
+      const target = allElements.find(el => el.i === decision.index);
+      if (target) {
+        const elementKey = `${target.tag}-${target.text}`;
+        await vigaLog(suiteId, `🧪 ${decision.test_name}`, "info");
+
+        // Ejecución Híbrida (DOM Event + Mouse)
+        try {
+          if (decision.action === 'type') {
+            await page.evaluate((i) => (document.querySelectorAll('a,button,input,select,textarea,[role="button"]')[i] as any).focus(), target.i);
+            await page.keyboard.type(decision.payload || "test", { delay: 30 });
+            await page.keyboard.press('Enter');
+          } else {
+            await page.evaluate((i) => {
+              const el = document.querySelectorAll('a,button,input,select,textarea,[role="button"]')[i] as HTMLElement;
+              el?.click();
+            }, target.i).catch(async () => {
+              await page.mouse.click(target.x, target.y);
+            });
+          }
+        } catch (e) {
+          await vigaLog(suiteId, `⚠️ Error al interactuar con elemento ${target.i}`, "warning");
+        }
+
+        await sleep(5000);
+        const dnaAfter = await getPageDNA(page);
+
+        // ORÁCULO: ¿Cambió algo realmente?
+        const hasNavigated = dnaBefore.url !== dnaAfter.url;
+        const hasTextChanged = dnaBefore.textHash !== dnaAfter.textHash;
+        const hasVisualChanged = dnaBefore.bg !== dnaAfter.bg || dnaBefore.themeData !== dnaAfter.themeData;
+        const success = hasNavigated || hasTextChanged || hasVisualChanged;
+
+        if (success) {
+          lastActionLog = `ÉXITO: ${target.text} cambió la web.`;
+          await vigaLog(suiteId, `✅ ${lastActionLog}`, "success");
         } else {
-          await locator.click({ timeout: 4000 });
+          lastActionLog = `INERTE: ${target.text} no produjo cambios detectables.`;
+          await vigaLog(suiteId, `⚠️ ${lastActionLog}`, "warning");
         }
 
-        state.triedUids.add(target.uid);
-        state.history.push(decision.test_name);
+        // TACHAMOS EL ELEMENTO (Sea éxito o no, ya lo exploramos)
+        exhaustedElements.add(elementKey);
 
-        // 4. Captura de Evidencia (Cada 2 pasos para ahorrar tokens de Visión)
-        if (state.stepCount % 2 === 0) {
-          await sleep(3000);
-          const ev = await captureEvidence(page, suiteId, stepId);
-          // Omitimos analyzeScreenshot si queremos ahorro máximo de tokens
-          await supabase.from('test_steps').insert({
-            suite_id: suiteId, action_type: 'chaos', selector: decision.test_name,
-            expected_result: "Paso validado - Exploración en curso",
-            status: 'success', screenshot_url: ev.screenshotUrl
-          });
-        }
-
-        // COOLDOWN ESTRATÉGICO: 8 segundos para que la API respire
-        console.log(`[VIGA] Paso ${state.stepCount} ok. Enfriando tokens...`);
-        await sleep(8000);
-
-      } catch (err) {
-        console.log("Obstáculo detectado, saltando...");
+        const ev = await captureEvidence(page, suiteId, crypto.randomUUID(), false);
+        await supabase.from('test_steps').insert({
+          suite_id: suiteId, action_type: decision.action, title: decision.test_name,
+          expected_result: lastActionLog, status: success ? 'success' : 'warning',
+          screenshot_url: ev.screenshotUrl, selector: target.text
+        });
       }
+      stepCount++;
     }
   } finally {
-    await page.close(); await context.close();
+    await page.close();
     await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
   }
 }
 
-/* ───────── AGENTE 3: STRIKE (FLUJOS CRÍTICOS) ───────── */
+/* ───────── AGENTE 3: STRIKE ───────── */
 export async function runStrikeAgent(url: string, suiteId: string, goal: string) {
-  const browser = await getBrowser()
-  const page = await browser.newPage()
+  const browser = await getBrowser();
+  const page = await browser.newPage();
   try {
-    await page.goto(url, { waitUntil: 'networkidle' })
-    for (let i = 0; i < 8; i++) {
-      const ui = await page.evaluate(() =>
-        Array.from(document.querySelectorAll('a,button,input,select')).map((e, i) => ({
-          i, tag: e.tagName, text: (e.textContent || "").trim().slice(0, 20),
-          en: !(e as any).disabled
-        })).filter(el => el.text !== "" || el.tag === 'INPUT').slice(0, 15)
-      )
-
-      const decision = await vigaShield(() => callGroqJSON(
-        `META: ${goal}. JSON: { "index": number, "action": "click"|"type", "value": "string", "goal_reached": boolean }`,
-        JSON.stringify(ui)
-      ), "Strike Think");
-
-      if (!decision || decision.goal_reached) break;
-
-      const target = ui[decision.index];
-      const locator = page.locator(`${target.tag.toLowerCase()}`).nth(ui.filter(e => e.tag === target.tag).findIndex(e => e.i === target.i));
-      
-      if (await locator.isEnabled()) {
-        if (decision.action === 'type') { await locator.fill(decision.value); await page.keyboard.press('Enter'); }
-        else { await locator.click({ timeout: 5000 }); }
-      }
-      await sleep(7000); // Goteo de tokens
-    }
-    const finalEv = await captureEvidence(page, suiteId, crypto.randomUUID());
-    await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
+    await page.goto(url, { waitUntil: 'networkidle' });
   } finally {
     await page.close();
+    await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
   }
 }

@@ -1,72 +1,45 @@
 'use client';
 import React, { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  X, Loader2, AlertCircle, Activity, 
-  Zap, Scan, Shield, Download, Camera 
-} from 'lucide-react';
+import { X, Zap, Activity, Terminal as TerminalIcon, ShieldAlert, CheckCircle2 } from 'lucide-react';
 import { supabase } from '../../lib/supabase'; 
-import { useTheme } from '../contexts/ThemeContext';
 
 export default function ChaosTerminal({ suiteId, open, onClose }) {
   const [steps, setSteps] = useState([]);
   const [status, setStatus] = useState('running');
-  const { theme } = useTheme();
+  const [selectedStep, setSelectedStep] = useState(null);
   const scrollRef = useRef(null);
-
-  // Función para descargar el screenshot actual
-  const downloadScreenshot = async () => {
-    const lastScreenshot = steps.slice().reverse().find(s => s.screenshot_url)?.screenshot_url;
-    if (!lastScreenshot) return;
-
-    try {
-      const response = await fetch(lastScreenshot);
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `VIGA-EVIDENCE-${suiteId}-${new Date().getTime()}.png`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } catch (err) {
-      console.error("Error downloading screenshot", err);
-    }
-  };
 
   useEffect(() => {
     if (!suiteId || !open) return;
+    setSteps([]); 
 
-    // Carga inicial
-    supabase
-      .from('test_steps')
+    supabase.from('test_steps')
       .select('*')
       .eq('suite_id', suiteId)
       .order('created_at', { ascending: true })
-      .then(({ data }) => data && setSteps(data));
+      .then(({ data }) => {
+        if (data) {
+          setSteps(data);
+          const lastWithImg = data.slice().reverse().find(s => s.screenshot_url);
+          if (lastWithImg) setSelectedStep(lastWithImg);
+        }
+      });
 
-    // Suscripción Realtime
-    const channel = supabase
-      .channel(`viga_live_${suiteId}`)
+    const channel = supabase.channel(`viga_live_${suiteId}`)
       .on('postgres_changes', { 
-        event: 'INSERT', 
-        schema: 'public', 
-        table: 'test_steps', 
-        filter: `suite_id=eq.${suiteId}` 
+        event: 'INSERT', schema: 'public', table: 'test_steps', filter: `suite_id=eq.${suiteId}` 
       }, payload => {
         setSteps(prev => {
           if (prev.find(s => s.id === payload.new.id)) return prev;
-          return [...prev, payload.new];
+          const newSteps = [...prev, payload.new];
+          if (payload.new.screenshot_url) setSelectedStep(payload.new);
+          return newSteps;
         });
       })
-      .on('postgres_changes', {
-        event: 'UPDATE', 
-        schema: 'public', 
-        table: 'test_suites', 
-        filter: `id=eq.${suiteId}`
-      }, payload => {
-        setStatus(payload.new.status);
-      })
+      .on('postgres_changes', { 
+        event: 'UPDATE', schema: 'public', table: 'test_suites', filter: `id=eq.${suiteId}` 
+      }, payload => setStatus(payload.new.status))
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
@@ -74,126 +47,119 @@ export default function ChaosTerminal({ suiteId, open, onClose }) {
 
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [steps]);
 
   if (!open) return null;
-  const isDark = theme === 'dark';
-  const currentScreenshot = steps.slice().reverse().find(s => s.screenshot_url)?.screenshot_url;
 
   return (
     <motion.div 
-      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className={`fixed inset-0 z-[10000] flex flex-col p-6 md:p-10 ${isDark ? 'bg-[#050505]' : 'bg-slate-50'}`}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[10000] bg-[#050505] flex flex-col font-sans"
     >
-      <header className="relative z-10 flex justify-between items-center mb-10">
-        <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-600/10 text-blue-500 text-[10px] font-black uppercase tracking-widest border border-blue-600/20 mb-4">
-            <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-            Live Mission Control
-          </div>
-          <h1 className={`text-4xl font-black uppercase tracking-tighter ${isDark ? 'text-white' : 'text-slate-900'}`}>
-            Neural <span className="text-blue-600">Overview</span>
-          </h1>
-        </div>
-
+      {/* HEADER DE COMANDO */}
+      <div className="h-16 border-b border-white/10 flex items-center justify-between px-8 bg-black/50 backdrop-blur-md">
         <div className="flex items-center gap-4">
-          <div className={`px-6 py-3 rounded-2xl border flex items-center gap-3 ${isDark ? 'bg-white/5 border-white/10 text-white' : 'bg-white border-slate-200 shadow-sm text-slate-900'}`}>
-            <span className="text-[10px] font-black uppercase text-slate-500">Suite:</span>
-            <span className="text-[10px] font-black uppercase tracking-widest">{status}</span>
+          <Zap className="text-orange-500 fill-orange-500" size={20} />
+          <div className="h-4 w-[1px] bg-white/20" />
+          <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-white">
+            Execution Room <span className="text-orange-500 ml-2">ID: {suiteId?.slice(0,8)}</span>
+          </h2>
+        </div>
+        
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full animate-pulse ${status === 'completed' ? 'bg-emerald-500' : 'bg-orange-500'}`} />
+            <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">{status}</span>
           </div>
-          <button onClick={onClose} className={`p-4 rounded-2xl border ${isDark ? 'bg-white/5 border-white/10 text-white' : 'bg-white border-slate-200 shadow-sm text-slate-900'}`}>
-            <X size={20} />
+          <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+            <X size={20} className="text-white" />
           </button>
         </div>
-      </header>
+      </div>
 
-      <div className="relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-8 flex-1 overflow-hidden">
+      {/* CUERPO PRINCIPAL */}
+      <div className="flex-1 flex overflow-hidden">
         
-        {/* IZQUIERDA: STREAM DE PASOS */}
-        <div className="lg:col-span-6 flex flex-col space-y-4 overflow-hidden">
-          <div className="flex items-center justify-between px-2">
-            <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 flex items-center gap-2">
-              <Activity size={14} /> Intelligence Feed
-            </span>
-          </div>
-
-          <div ref={scrollRef} className="flex-1 overflow-y-auto pr-4 space-y-4 scrollbar-hide">
-            <AnimatePresence mode="popLayout">
-              {steps.map((step) => (
-                <motion.div key={step.id} layout initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                  className={`p-6 rounded-[32px] border flex items-start gap-6 ${isDark ? 'bg-[#080808] border-white/5' : 'bg-white border-slate-200 shadow-sm'}`}
-                >
-                  <div className={`p-4 rounded-2xl ${step.status === 'failed' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'}`}>
-                    <Zap size={20} />
+        {/* PANEL IZQUIERDO: LOGS */}
+        <div className="w-[400px] border-r border-white/10 flex flex-col bg-black/40">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
+            {steps.map((step, idx) => (
+              <motion.div 
+                initial={{ x: -20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                key={step.id}
+                onClick={() => step.screenshot_url && setSelectedStep(step)}
+                className={`p-4 rounded-2xl cursor-pointer transition-all border ${
+                  selectedStep?.id === step.id 
+                  ? 'bg-orange-500/10 border-orange-500/40 shadow-[0_0_20px_rgba(249,115,22,0.1)]' 
+                  : 'bg-white/5 border-transparent hover:border-white/10'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <span className={`mt-1 text-[8px] font-black px-1.5 py-0.5 rounded shadow-sm ${
+                    step.status === 'success' ? 'bg-emerald-500 text-black' : 'bg-red-500 text-white'
+                  }`}>
+                    {idx + 1}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[11px] font-black text-white uppercase tracking-tight truncate">{step.title}</p>
+                    <p className="text-[9px] text-slate-500 mt-1 font-mono uppercase tracking-tighter">Status: {step.status}</p>
                   </div>
-                  <div className="flex-1">
-                    <h3 className={`text-sm font-black uppercase tracking-tight mb-1 ${isDark ? 'text-white' : 'text-slate-900'}`}>{step.selector || 'Thinking...'}</h3>
-                    <p className="text-xs text-slate-500 font-medium mb-3">{step.expected_result}</p>
-                    <div className={`flex items-center gap-1.5 text-[9px] font-black uppercase ${step.status === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>
-                      <Shield size={10} /> {step.status === 'success' ? 'Verified' : 'Mutation Detected'}
-                    </div>
-                  </div>
-                </motion.div>
-              ))}
-            </AnimatePresence>
+                </div>
+              </motion.div>
+            ))}
           </div>
         </div>
 
-        {/* DERECHA: MONITOR DE VISION + BOTÓN SAVE */}
-        <div className="lg:col-span-6 flex flex-col space-y-6">
-          <div className={`flex-1 rounded-[40px] border overflow-hidden relative group ${isDark ? 'bg-[#080808] border-white/5' : 'bg-white border-slate-200 shadow-xl'}`}>
-            
-            {/* OVERLAY: BOTÓN SAVE SCREENSHOT */}
-            <div className="absolute top-6 right-6 z-30 flex gap-2">
-               {currentScreenshot && (
-                 <button 
-                  onClick={downloadScreenshot}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all active:scale-95 shadow-lg shadow-blue-600/20"
-                 >
-                   <Download size={14} /> Save Evidence
-                 </button>
-               )}
-            </div>
-
-            <div className="absolute top-6 left-6 z-20">
-               <div className="px-3 py-1.5 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-white text-[9px] font-black uppercase tracking-widest flex items-center gap-2">
-                 <Camera size={12} className="text-blue-400" /> Neural Vision Feed
-               </div>
-            </div>
-
-            <AnimatePresence mode="wait">
-              {currentScreenshot ? (
-                <motion.img 
-                  key={currentScreenshot} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                  src={currentScreenshot} className="w-full h-full object-cover" alt="VIGA Vision"
-                />
-              ) : (
-                <div className="w-full h-full flex flex-col items-center justify-center space-y-4 bg-slate-900/10">
-                  <div className="w-16 h-16 rounded-full border-4 border-blue-500/20 border-t-blue-500 animate-spin" />
+        {/* PANEL DERECHO: VISOR DE EVIDENCIA FULL */}
+        <div className="flex-1 relative bg-[#080808] p-8 flex flex-col">
+          <AnimatePresence mode='wait'>
+            {selectedStep ? (
+              <motion.div 
+                key={selectedStep.id}
+                initial={{ opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.98 }}
+                className="w-full h-full flex flex-col"
+              >
+                <div className="relative flex-1 rounded-[30px] overflow-hidden border border-white/10 bg-black shadow-2xl">
+                  <img 
+                    src={selectedStep.screenshot_url} 
+                    className="w-full h-full object-contain" 
+                    alt="Evidence" 
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent opacity-60 pointer-events-none" />
                 </div>
-              )}
-            </AnimatePresence>
-            <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent pointer-events-none" />
-          </div>
-
-          {/* METRICAS INFERIORES */}
-          <div className={`p-8 rounded-[32px] border flex justify-between items-center ${isDark ? 'bg-white/[0.02] border-white/5' : 'bg-white border-slate-200'}`}>
-             <div className="flex items-center gap-4">
-               <div className="p-3 bg-blue-500/10 rounded-2xl text-blue-500"><Scan size={20}/></div>
-               <div>
-                 <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Active Cluster</p>
-                 <p className={`text-sm font-black uppercase ${isDark ? 'text-white' : 'text-slate-900'}`}>MATERIA-RUN-S1</p>
-               </div>
-             </div>
-             <div className="text-right">
-                <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Node Count</p>
-                <p className={`text-xl font-black ${isDark ? 'text-white' : 'text-slate-900'}`}>{steps.length}</p>
-             </div>
-          </div>
+                
+                <div className="mt-6 p-6 bg-white/5 border border-white/10 rounded-[24px]">
+                    <div className="flex items-center gap-2 mb-2">
+                        <Activity size={14} className="text-orange-500" />
+                        <span className="text-[10px] font-black uppercase text-orange-500 tracking-widest">Neural Analysis</span>
+                    </div>
+                    <p className="text-sm text-slate-300 font-medium leading-relaxed italic">
+                      "{selectedStep.expected_result}"
+                    </p>
+                </div>
+              </motion.div>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center opacity-20">
+                <Activity size={48} className="animate-spin duration-[4s] mb-4 text-white" />
+                <span className="text-xs font-black uppercase tracking-[0.5em] text-white">Awaiting Uplink...</span>
+              </div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
+
+      <style jsx global>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #ea580c; }
+      `}</style>
     </motion.div>
   );
 }
