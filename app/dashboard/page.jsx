@@ -15,11 +15,10 @@ const supabase = createClient(
 // --- PÍLDORA PRO (RESTURADA) ---
 function ChaosFloatingBubble({ total, success, alerts, onExpand, isDark }) {
   return (
-    <div 
+    <div
       onClick={onExpand}
-      className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-6 px-8 py-4 rounded-full border cursor-pointer transition-all hover:scale-105 active:scale-95 shadow-[0_20px_50px_rgba(0,0,0,0.5)] backdrop-blur-xl animate-in slide-in-from-bottom-10 duration-500 ${
-        isDark ? 'bg-orange-600/20 border-orange-500/40' : 'bg-white border-orange-200'
-      }`}
+      className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-6 px-8 py-4 rounded-full border cursor-pointer transition-all hover:scale-105 active:scale-95 shadow-[0_20px_50px_rgba(0,0,0,0.5)] backdrop-blur-xl animate-in slide-in-from-bottom-10 duration-500 ${isDark ? 'bg-orange-600/20 border-orange-500/40' : 'bg-white border-orange-200'
+        }`}
     >
       <div className="flex items-center gap-3">
         <div className="relative">
@@ -66,13 +65,13 @@ export default function MissionControlPage() {
   // --- LÓGICA DE REALTIME (CON FIX DE SCREENSHOTS) ---
   useEffect(() => {
     if (!activeSuiteId) return;
-    
+
     const stepsChannel = supabase.channel(`steps-${activeSuiteId}`)
-      .on('postgres_changes', { 
-        event: 'INSERT', 
-        schema: 'public', 
-        table: 'test_steps', 
-        filter: `suite_id=eq.${activeSuiteId}` 
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'test_steps',
+        filter: `suite_id=eq.${activeSuiteId}`
       }, (p) => {
         // IMPORTANTE: Mapeamos los nombres de la DB a lo que espera tu ChaosTerminal
         const newStep = {
@@ -90,11 +89,11 @@ export default function MissionControlPage() {
 
   const handleStartMission = async () => {
     if (!url) return;
-    setTestCases([]); 
+    setTestCases([]);
     setStatus('running');
     const { data: suite } = await supabase.from('test_suites').insert([{
-      name: `${missionMode.toUpperCase()}: ${url}`, 
-      base_url: url, 
+      name: `${missionMode.toUpperCase()}: ${url}`,
+      base_url: url,
       status: 'running'
     }]).select().single();
 
@@ -111,21 +110,21 @@ export default function MissionControlPage() {
   return (
     <div className={`min-h-screen pb-32 ${isDark ? 'bg-[#050505] text-white' : 'bg-slate-50'}`}>
       <div className="max-w-7xl mx-auto px-6">
-        
+
         {status === 'running' && missionMode === 'chaos' && (
-          <ChaosFloatingBubble 
-            total={testCases.length} 
-            success={testCases.filter(s => s.status === 'success').length} 
-            alerts={testCases.filter(s => s.status === 'failed' || s.status === 'warning').length} 
-            onExpand={() => setChaosOpen(true)} 
-            isDark={isDark} 
+          <ChaosFloatingBubble
+            total={testCases.length}
+            success={testCases.filter(s => s.status === 'success').length}
+            alerts={testCases.filter(s => s.status === 'failed' || s.status === 'warning').length}
+            onExpand={() => setChaosOpen(true)}
+            isDark={isDark}
           />
         )}
 
-        <ChaosTerminal 
-          open={chaosOpen} 
-          suiteId={activeSuiteId} 
-          onClose={() => setChaosOpen(false)} 
+        <ChaosTerminal
+          open={chaosOpen}
+          suiteId={activeSuiteId}
+          onClose={() => setChaosOpen(false)}
         />
 
         <header className="py-12 border-b border-white/5 mb-12">
@@ -142,13 +141,12 @@ export default function MissionControlPage() {
           <div className="flex flex-col gap-8">
             <div className="flex gap-2 p-1.5 bg-black/40 w-fit rounded-full border border-white/5">
               {['scout', 'chaos', 'strike'].map((m) => (
-                <button 
+                <button
                   key={m} onClick={() => setMissionMode(m)}
-                  className={`px-8 py-3 rounded-full text-[10px] font-black uppercase transition-all ${
-                    missionMode === m 
-                    ? (m === 'scout' ? 'bg-blue-600' : m === 'chaos' ? 'bg-orange-600' : 'bg-purple-600 text-white') 
-                    : 'text-slate-500 hover:text-white'
-                  }`}
+                  className={`px-8 py-3 rounded-full text-[10px] font-black uppercase transition-all ${missionMode === m
+                      ? (m === 'scout' ? 'bg-blue-600' : m === 'chaos' ? 'bg-orange-600' : 'bg-purple-600 text-white')
+                      : 'text-slate-500 hover:text-white'
+                    }`}
                 >
                   {m}
                 </button>
@@ -158,25 +156,25 @@ export default function MissionControlPage() {
             <div className="flex flex-col md:flex-row gap-4">
               <div className="flex-[2] flex items-center gap-4 px-8 py-5 rounded-full border border-white/10 bg-black/20">
                 <Globe size={18} className="text-slate-500" />
-                <input 
+                <input
                   value={url} onChange={(e) => setUrl(e.target.value)}
-                  placeholder="TARGET URL..." 
+                  placeholder="TARGET URL..."
                   className="bg-transparent border-none outline-none text-xs font-black w-full uppercase tracking-widest text-white"
                 />
               </div>
-              
+
               {missionMode === 'strike' && (
                 <div className="flex-1 flex items-center gap-4 px-8 py-5 rounded-full border border-purple-500/30 bg-purple-500/5 animate-in slide-in-from-left-4">
                   <Target size={18} className="text-purple-500" />
-                  <input 
+                  <input
                     value={missionGoal} onChange={(e) => setMissionGoal(e.target.value)}
-                    placeholder="STRIKE GOAL..." 
+                    placeholder="STRIKE GOAL..."
                     className="bg-transparent border-none outline-none text-xs font-black w-full uppercase tracking-widest text-purple-200"
                   />
                 </div>
               )}
 
-              <button 
+              <button
                 onClick={handleStartMission}
                 className="bg-blue-600 hover:bg-blue-500 px-12 py-5 rounded-full font-black text-[10px] uppercase transition-all shadow-lg shadow-blue-600/20 active:scale-95 text-white"
               >

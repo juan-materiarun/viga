@@ -7,7 +7,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 // En Vercel Pro esto puede subir a 900. En Hobby el máximo real es 60s, 
 // pero Upstash reintentará si se corta.
-export const maxDuration = 300; 
+export const maxDuration = 300;
 
 async function handler(req: Request) {
   try {
@@ -20,15 +20,14 @@ async function handler(req: Request) {
 
     console.log(`[VIGA-WORKER] 🚀 Disparando Misión Chaos en Background...`);
 
-    // 🔥 QUITAMOS EL AWAIT: Esto dispara el proceso y sigue de largo
-    runChaosAgent(url, suite_id)
-      .then(() => console.log(`[VIGA-WORKER] ✅ Ejecución de fondo terminada: ${suite_id}`))
-      .catch((e) => console.error(`[VIGA-WORKER] 🚨 Error en ejecución de fondo:`, e));
+    // 🔥 CAMBIO: Usamos await para que el worker no muera antes de tiempo
+    await runChaosAgent(url, suite_id);
+    console.log(`[VIGA-WORKER] ✅ Ejecución de fondo terminada: ${suite_id}`);
 
     // ✅ RESPONDEMOS DE INMEDIATO: QStash recibe esto y se queda tranquilo
-    return NextResponse.json({ 
-      success: true, 
-      message: "Agent triggered in background" 
+    return NextResponse.json({
+      success: true,
+      message: "Agent triggered in background"
     });
 
   } catch (err: any) {

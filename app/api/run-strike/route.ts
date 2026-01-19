@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
-import { runStrikeAgent } from '../../actions/agents'
+import { Client } from "@upstash/qstash"
+
+const qstash = new Client({ token: process.env.QSTASH_TOKEN! })
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -27,14 +29,21 @@ export async function POST(req: Request) {
 
     const targetUrl = normalizeUrl(url)
 
-    // 🎯 FIRE & FORGET
-    runStrikeAgent(targetUrl, suite_id, goal).catch(console.error)
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+      ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")
+
+    await qstash.publishJSON({
+      url: `${baseUrl}/api/worker/strike`,
+      body: { url: targetUrl, suite_id, goal },
+      headers: { "ngrok-skip-browser-warning": "true" }
+    })
 
     return NextResponse.json({
       success: true,
       agent: 'strike',
       suite_id,
-      goal
+      goal,
+      status: 'enqueued'
     })
   } catch (err: any) {
     return NextResponse.json(
@@ -43,3 +52,4 @@ export async function POST(req: Request) {
     )
   }
 }
+
