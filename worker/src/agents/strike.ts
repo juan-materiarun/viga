@@ -207,6 +207,11 @@ INSTRUCCIONES DE RESPUESTA:
 2. "thought": Razonamiento (Ej: "Veo el botón Light, lo clickearé para cambiar...").
 3. Si el objetivo está cumplido visualmente -> Action: "finish".
 
+IMPORTANTE:
+- Revisa el "history" provisto. NO REPITAS acciones que ya hiciste recientemente.
+- Si ya intentaste algo y no funcionó, prueba otra estrategia.
+- Si te encuentras en un bucle (ej: activando/desactivando lo mismo), DETENTE y marca como "finish" o intenta algo nuevo.
+
 JSON:
 { "title": "...", "thought": "...", "status": "active"|"completed"|"failed", "action": "click"|"type"|"wait"|"finish", "index": number, "payload": "..." }
 `;
@@ -225,8 +230,14 @@ export async function runStrikeAgent(jobId: string, url: string, suiteId: string
         let steps = 0;
         const MAX_STEPS = 50;
         let lastAction = 'Started Strike Agent';
+        const history: string[] = [];
 
         while (steps < MAX_STEPS) {
+            if (page.isClosed()) {
+                await vigaLog(suiteId, '⚠️ Página cerrada prematuramente. Finalizando.', 'warning');
+                break;
+            }
+
             await waitForStableUI(page);
             const elements = await smartWaitForElements(page, suiteId);
             if (elements.length === 0) break;
@@ -236,6 +247,7 @@ export async function runStrikeAgent(jobId: string, url: string, suiteId: string
                 current_url: page.url(),
                 page_title: await page.title(),
                 last_action: lastAction,
+                history: history.slice(-10), // Send last 10 actions
                 visible_elements: elements.map(e => ({ i: e.i, tag: e.tag, hint: e.hint }))
             });
 
@@ -253,6 +265,7 @@ export async function runStrikeAgent(jobId: string, url: string, suiteId: string
             if (!plan) break;
 
             await vigaLog(suiteId, `🤔 (${steps + 1}) ${plan.title || plan.thought}`, 'info');
+            history.push(`${plan.title || 'Action'}: ${plan.thought}`);
 
             if (plan.status === 'completed' || plan.action === 'finish') {
                 await vigaLog(suiteId, '✅ Objetivo Cumplido', 'success');
@@ -290,7 +303,9 @@ export async function runStrikeAgent(jobId: string, url: string, suiteId: string
                     }
                 }
             } catch (err: any) {
-                await recordStep(suiteId, page, 'ERROR DE EJECUCIÓN', 'failed', err.message);
+                try {
+                    await recordStep(suiteId, page, 'ERROR DE EJECUCIÓN', 'failed', err.message);
+                } catch { /* Browser closed? */ }
             }
         }
         await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
