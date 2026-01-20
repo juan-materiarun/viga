@@ -708,7 +708,7 @@ export async function runReplayAgent(url: string, suiteId: string, recordedSteps
     await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
     throw e
   } finally {
-    clearInterval(keepalive) // Stop keepalive heartbeat    await page.close()
+    await page.close()
     if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
       await browser.close().catch(() => { })
     }
