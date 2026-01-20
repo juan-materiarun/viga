@@ -36,8 +36,25 @@ export async function POST(req: Request) {
 
     const targetUrl = normalizeUrl(url)
 
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL
-      ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")
+    // ✅ MODIFICACIÓN ROBUSTA: Smart URL detection
+    let baseUrl = process.env.NEXT_PUBLIC_APP_URL;
+
+    const isVercel = !!process.env.VERCEL_URL;
+    const isNgrokConfig = baseUrl?.includes('ngrok') || baseUrl?.includes('localhost');
+
+    if (isVercel && isNgrokConfig) {
+      console.warn(`[VIGA-CONFIG] ⚠️ WARNING: NEXT_PUBLIC_APP_URL is set to '${baseUrl}' but running on Vercel. Falling back to https://${process.env.VERCEL_URL}`);
+      baseUrl = `https://${process.env.VERCEL_URL}`;
+    } else if (!baseUrl) {
+      baseUrl = isVercel ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
+    }
+
+    // Ensure no trailing slash
+    baseUrl = baseUrl.replace(/\/$/, "");
+
+    console.log(`[VIGA-QSTASH] 🚀 Encolando STRIKE job.`);
+    console.log(`[VIGA-QSTASH] 📍 Destino Worker: ${baseUrl}/api/worker/strike`);
+    console.log(`[VIGA-QSTASH] 🎯 Goal: ${goal}`);
 
     await qstash.publishJSON({
       url: `${baseUrl}/api/worker/strike`,
@@ -50,9 +67,11 @@ export async function POST(req: Request) {
       agent: 'strike',
       suite_id,
       goal,
-      status: 'enqueued'
+      status: 'enqueued',
+      debug_worker_url: `${baseUrl}/api/worker/strike`
     })
   } catch (err: any) {
+    console.error('[STRIKE ENQUEUE ERROR]:', err);
     return NextResponse.json(
       { error: err?.message || 'Internal error' },
       { status: 500 }

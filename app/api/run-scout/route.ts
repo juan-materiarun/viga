@@ -35,12 +35,29 @@ export async function POST(req: Request) {
 
     const targetUrl = normalizeUrl(url);
 
-    // ✅ MODIFICACIÓN: Priorizamos el túnel de ngrok si existe en el .env
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL
-      ? process.env.NEXT_PUBLIC_APP_URL
-      : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+    // ✅ MODIFICACIÓN ROBUSTA:
+    // 1. Si NEXT_PUBLIC_APP_URL existe y NO incluye 'ngrok' (o estamos en local), úsalo.
+    // 2. Si estamos en Vercel (VERCEL_URL existe) y APP_URL parece incorrecta (ngrok), usa VERCEL_URL.
+    // 3. Fallback a localhost.
+    let baseUrl = process.env.NEXT_PUBLIC_APP_URL;
 
-    console.log(`[VIGA-QSTASH] Encolando SCOUT hacia worker en: ${baseUrl}/api/worker/scout`);
+    // Detect if we are in a Vercel deployment but configured with a local/ngrok URL
+    const isVercel = !!process.env.VERCEL_URL;
+    const isNgrokConfig = baseUrl?.includes('ngrok') || baseUrl?.includes('localhost');
+
+    if (isVercel && isNgrokConfig) {
+      console.warn(`[VIGA-CONFIG] ⚠️ WARNING: NEXT_PUBLIC_APP_URL is set to '${baseUrl}' but running on Vercel. Falling back to https://${process.env.VERCEL_URL}`);
+      baseUrl = `https://${process.env.VERCEL_URL}`;
+    } else if (!baseUrl) {
+      baseUrl = isVercel ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
+    }
+
+    // Ensure no trailing slash
+    baseUrl = baseUrl.replace(/\/$/, "");
+
+    console.log(`[VIGA-QSTASH] 🚀 Encolando SCOUT job.`);
+    console.log(`[VIGA-QSTASH] 📍 Destino Worker: ${baseUrl}/api/worker/scout`);
+    console.log(`[VIGA-QSTASH] 🎯 Objetivo Agent: ${targetUrl}`);
 
     // 🚀 ENCOLAR: Enviamos el trabajo al Scout Worker
     await qstash.publishJSON({
@@ -49,7 +66,6 @@ export async function POST(req: Request) {
         url: targetUrl,
         suite_id: suite_id
       },
-      // ✅ HEADER CRÍTICO PARA NGROK GRATUITO:
       headers: {
         "ngrok-skip-browser-warning": "true",
       },
@@ -60,7 +76,8 @@ export async function POST(req: Request) {
       agent: 'scout',
       suite_id,
       status: 'enqueued',
-      normalized_url: targetUrl
+      normalized_url: targetUrl,
+      debug_worker_url: `${baseUrl}/api/worker/scout`
     });
 
   } catch (err: any) {
