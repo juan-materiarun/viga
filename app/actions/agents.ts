@@ -458,23 +458,31 @@ export async function runChaosAgent(url: string, suiteId: string, credentials?: 
               payload = credentials.username || payload;
             }
 
+            console.log(`[CHAOS] ⌨️ Typing...`)
             try { await page.fill(target.selector, payload) }
             catch (e) { if (target.xpath) await page.fill(`xpath=${target.xpath}`, payload); else throw e }
           } else {
-            try { await page.click(target.selector, { timeout: 5000 }) }
-            catch (e) { if (target.xpath) await page.click(`xpath=${target.xpath}`, { timeout: 5000 }); else throw e }
+            console.log(`[CHAOS] 🖱️ Clicking...`)
+            try { await page.click(target.selector, { timeout: 8000 }) }
+            catch (e) {
+              console.log(`[CHAOS] ⚠️ Standard click failed, trying XPath...`)
+              if (target.xpath) await page.click(`xpath=${target.xpath}`, { timeout: 8000 }); else throw e
+            }
           }
+          console.log(`[CHAOS] ✅ Action executed. Sleeping...`)
 
           actions++
           await sleep(3000)
 
           // USE TITLE + THOUGHT properly + SAVE SELECTOR for regression
+          console.log(`[CHAOS] 📝 Recording step...`)
           await recordStep(suiteId, page, decision.title || actionDesc, 'success', decision.thought || actionDesc, {
             selector: target.selector,
             xpath: target.xpath,
             actionType: decision.action as 'click' | 'type',
             payload: decision.action === 'type' ? (credentials && (target.selector.includes('password') || target.selector.includes('pass')) ? '******' : decision.payload) : null
           })
+          console.log(`[CHAOS] ✅ Step recorded.`)
         } catch (err: any) {
           await vigaLog(suiteId, `⚠️ Fallo: ${err.message}`, 'warning')
           await recordStep(suiteId, page, `ERROR: ${decision.title}`, 'failed', err.message)
