@@ -455,8 +455,6 @@ export async function runChaosAgent(url: string, suiteId: string, credentials?: 
     throw e
   } finally {
     await page.close()
-  }
-}
     if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
       await browser.close().catch(() => { })
     }
@@ -558,8 +556,6 @@ export async function runStrikeAgent(url: string, suiteId: string, goal: string)
     throw e
   } finally {
     await page.close()
-  }
-}
     if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
       await browser.close().catch(() => { })
     }
@@ -672,8 +668,6 @@ export async function runReplayAgent(url: string, suiteId: string, recordedSteps
     throw e
   } finally {
     await page.close()
-  }
-}
     if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
       await browser.close().catch(() => { })
     }
