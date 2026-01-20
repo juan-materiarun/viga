@@ -8,7 +8,7 @@ export type LLMContext = {
   cooldownUntil: number
 }
 
-/* ───────── CONTEXTO POR AGENTE ───────── */
+/* ───────── CONTEXTO POR AGENTE ───────── */l
 
 export function createLLMContext(): LLMContext {
   const keys = [
