@@ -78,8 +78,7 @@ async function updateStep(
   const { error } = await supabase.from('test_steps').update({
     status: status,
     screenshot_url: evidence.screenshotUrl,
-    expected_result: description,
-    updated_at: new Date().toISOString()
+    expected_result: description
   }).eq('id', stepId)
 
   if (error) console.error('Error updating step:', error)
@@ -241,7 +240,6 @@ async function smartWaitForElements(page: any, suiteId: string): Promise<UIEleme
   }
 
   await vigaLog(suiteId, `🛑 Tiempo agotado (${POLL_MAX / 1000}s). Página inactiva.`, 'error')
-  await recordStep(suiteId, page, 'Falló: Timeout (60s)', 'failed', 'No se encontraron elementos interactivos tras espera profunda.')
   return []
 }
 
@@ -305,23 +303,39 @@ export async function runScoutAgent(url: string, suiteId: string) {
 /* ───────── CHAOS AGENT ───────── */
 
 const CHAOS_SYSTEM = `
-Eres un Tester de Chaos Inteligente. Objetivo: Explorar funcionalidades ÚNICAS.
+Eres un Tester de Chaos Inteligente y Analítico. Tu misión es explorar aplicaciones web como lo haría un QA experto.
 
-Reglas:
-1. Prioridad: "visited": false.
-2. Si todo visited: FINISH.
+CONTEXTO QUE RECIBIRÁS:
+- Contenido visible de la página (texto, encabezados)
+- Elementos interactivos con sus propiedades
+- Historial de acciones previas
+
+TU PROCESO DE DECISIÓN:
+1. ANALIZA el propósito de la página según su contenido (¿es login? ¿dashboard? ¿formulario?).
+2. PRIORIZA elementos críticos no visitados (botones de submit, links de navegación, campos de búsqueda).
+3. En "thought", EXPLICA tu razonamiento basándote en el CONTEXTO de la página, no solo en si fue visitado.
+
+EJEMPLOS DE RAZONAMIENTO:
+❌ MAL: "Este enlace no ha sido visitado."
+✅ BIEN: "La página muestra 'Bienvenido a DOJO QA' y menciona herramientas de testing. Este enlace 'Comenzar Tutorial' parece ser el flujo principal de onboarding."
+✅ BIEN: "Detecto un formulario con campos email/password. El botón 'Iniciar Sesión' es crítico para probar autenticación."
+
+REGLAS CRÍTICAS:
+1. JAMÁS selecciones un elemento con "visited": true.
+2. Si TODOS los elementos tienen "visited": true -> Action: "finish".
+3. Usa page_content y headings para entender el contexto, no solo el hint del elemento.
 
 Responde JSON:
 {
-  "title": "TÍTULO CORTO Y CLARO (Ej: CAMBIAR IDIOMA)",
-  "thought": "Explicación detallada de por qué haces esto...",
-  "index": number (opcional si finish),
+  "title": "ACCIÓN CLARA (Ej: PROBAR LOGIN)",
+  "thought": "Razonamiento contextual detallado sobre POR QUÉ esta acción es importante según el contenido de la página",
+  "index": number,
   "action": "click" | "type" | "finish",
-  "payload": "string"
+  "payload": "string si action=type"
 }
 `
 
-export async function runChaosAgent(url: string, suiteId: string) {
+export async function runChaosAgent(url: string, suiteId: string, credentials?: any) {
   const browser = await getBrowser()
   const page = await browser.newPage()
   const llmCtx = createLLMContext()
@@ -344,27 +358,66 @@ export async function runChaosAgent(url: string, suiteId: string) {
       const elements = await smartWaitForElements(page, suiteId)
       const currentUrl = page.url()
 
-      if (elements.length === 0) break
+      if (elements.length === 0) {
+        await vigaLog(suiteId, '🛑 No se detectaron elementos. Chaos finalizado.', 'warning')
+        break
+      }
 
       const stateHash = crypto.createHash('md5').update(currentUrl + elements.length).digest('hex')
       if (!visitedStates.has(stateHash)) {
         visitedStates.add(stateHash)
         await vigaLog(suiteId, `📍 Nuevo estado: ${currentUrl} (${elements.length} elems)`, 'info')
+
+        // Continuous Discovery: Upsert found elements to global DB
+        const upsertBatch = elements.map(el => ({
+          suite_id: suiteId,
+          selector: el.selector,
+          tag_name: el.tag,
+          text: el.text || el.hint,
+          url: currentUrl,
+          status: 'active',
+          priority: 1,
+          identity_data: {
+            hint: el.hint,
+            attributes: el.attributes,
+            xpath: el.xpath
+          }
+        }))
+
+        await supabase.from('discovered_elements').upsert(upsertBatch, { onConflict: 'suite_id, selector' })
       }
 
       const mappedElements = elements.map(e => {
-        const fingerprint = `${currentUrl}::${e.hint}::${e.tag}`
-        return { i: e.i, tag: e.tag, hint: e.hint, visited: visitedFingerprints.has(fingerprint) }
+        // Normalize URL for fingerprinting (strip hash/query to handle SPAs)
+        const baseUrl = currentUrl.split('#')[0].split('?')[0]
+        const fingerprint = `${baseUrl}::${e.selector}`
+        return {
+          i: e.i,
+          tag: e.tag,
+          hint: e.hint,
+          selector: e.selector,
+          visited: visitedFingerprints.has(fingerprint)
+        }
       })
 
       const unvisitedCount = mappedElements.filter(e => !e.visited).length
 
+      // RICH CONTEXT EXTRACTION
+      const pageContent = await page.textContent('body').catch(() => '')
+      const headings = await page.$$eval('h1, h2, h3', els => els.map(el => el.textContent?.trim()).filter(Boolean)).catch(() => [])
+      const formCount = await page.$$eval('form', forms => forms.length).catch(() => 0)
+
       const context = JSON.stringify({
         url: currentUrl,
         title: await page.title(),
+        page_content: pageContent.slice(0, 2000), // First 2000 chars
+        headings: headings.slice(0, 10), // Top 10 headings
+        forms_detected: formCount,
         history: history.slice(-15),
         interactive_elements: mappedElements,
-        stats: { unvisited_elements: unvisitedCount }
+        stats: { unvisited_elements: unvisitedCount, total_elements: mappedElements.length },
+        credentials_vault: credentials ? "AVAILABLE (Use these for login forms if needed)" : "NONE",
+        available_credentials: credentials
       })
 
       const decision = await callGroqJSON(llmCtx, CHAOS_SYSTEM, context)
@@ -382,22 +435,35 @@ export async function runChaosAgent(url: string, suiteId: string) {
       const target = elements.find(e => e.i === decision.index)
 
       if (target) {
-        const fingerprint = `${currentUrl}::${target.hint}::${target.tag}`
+        // Normalize URL for fingerprinting (strip hash/query to handle SPAs)
+        const baseUrl = currentUrl.split('#')[0].split('?')[0]
+        const fingerprint = `${baseUrl}::${target.selector}`
         const actionDesc = `${decision.action} en "${target.hint}"`
         await vigaLog(suiteId, `👉 [${actions + 1}/${MAX_ACTIONS}] ${decision.title || actionDesc}`, 'info')
 
         history.push(`${decision.title}: ${decision.thought}`)
 
+        // MARK AS VISITED BEFORE ACTION (prevents LLM from seeing it again in next iteration)
+        visitedFingerprints.add(fingerprint)
+        await vigaLog(suiteId, `🔖 Marcado como visitado: ${fingerprint.slice(0, 80)}...`, 'info')
+
         try {
           if (decision.action === 'type') {
-            try { await page.fill(target.selector, decision.payload || 'Val') }
-            catch (e) { if (target.xpath) await page.fill(`xpath=${target.xpath}`, decision.payload || 'Val'); else throw e }
+            // Check if this is a credential field
+            let payload = decision.payload || 'Val';
+            if (credentials && (target.selector.includes('password') || target.selector.includes('pass'))) {
+              payload = credentials.password || payload;
+            } else if (credentials && (target.selector.includes('email') || target.selector.includes('user'))) {
+              payload = credentials.username || payload;
+            }
+
+            try { await page.fill(target.selector, payload) }
+            catch (e) { if (target.xpath) await page.fill(`xpath=${target.xpath}`, payload); else throw e }
           } else {
             try { await page.click(target.selector, { timeout: 5000 }) }
             catch (e) { if (target.xpath) await page.click(`xpath=${target.xpath}`, { timeout: 5000 }); else throw e }
           }
 
-          visitedFingerprints.add(fingerprint)
           actions++
           await sleep(3000)
 
@@ -406,7 +472,7 @@ export async function runChaosAgent(url: string, suiteId: string) {
             selector: target.selector,
             xpath: target.xpath,
             actionType: decision.action as 'click' | 'type',
-            payload: decision.payload
+            payload: decision.action === 'type' ? (credentials && (target.selector.includes('password') || target.selector.includes('pass')) ? '******' : decision.payload) : null
           })
         } catch (err: any) {
           await vigaLog(suiteId, `⚠️ Fallo: ${err.message}`, 'warning')
@@ -531,14 +597,17 @@ export async function runReplayAgent(url: string, suiteId: string, recordedSteps
   const page = await browser.newPage()
   const llmCtx = createLLMContext()
 
-  await vigaLog(suiteId, `🔁 Iniciando Regresión: ${recordedSteps.length} pasos.`, 'info')
+  // Ensure steps are executed in chronological order (safety sort)
+  const steps = [...recordedSteps].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+
+  await vigaLog(suiteId, `🔁 Iniciando Regresión: ${steps.length} pasos.`, 'info')
 
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded' })
     try { await page.waitForLoadState('networkidle', { timeout: 8000 }) } catch (e) { }
 
-    for (let idx = 0; idx < recordedSteps.length; idx++) {
-      const step = recordedSteps[idx]
+    for (let idx = 0; idx < steps.length; idx++) {
+      const step = steps[idx]
       await vigaLog(suiteId, `▶️ Paso ${idx + 1}: ${step.title}`, 'info')
       await waitForStableUI(page)
 

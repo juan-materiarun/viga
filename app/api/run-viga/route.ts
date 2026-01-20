@@ -12,6 +12,12 @@ export async function POST(req: Request) {
             return NextResponse.json({ success: false, error: 'URL and Steps required' }, { status: 400 });
         }
 
+        // BACKEND VALIDATION
+        const urlPattern = /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([/\w .-]*)*\/?$/;
+        if (!urlPattern.test(url)) {
+            return NextResponse.json({ success: false, error: 'Invalid URL format' }, { status: 400 });
+        }
+
         if (!userId) {
             return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
         }

@@ -10,10 +10,11 @@ import {
   Loader2, Eye, Bug, Terminal as TerminalIcon, Download,
   Layout, ShieldAlert, Activity, ChevronRight, Save,
   AlertTriangle, AlertCircle, Sparkles, Clock, Search, Cpu,
-  Settings, Key, Brain, FlaskConical, Globe, ShieldCheck, Box
+  Settings, Key, Brain, FlaskConical, Globe, ShieldCheck, Box, Coins
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import CreditDeduction from '../components/CreditDeduction';
 
 export default function UnifiedTestsPage() {
   const { user } = useAuth();
@@ -39,6 +40,12 @@ export default function UnifiedTestsPage() {
   const [selectedImg, setSelectedImg] = useState(null); // Para ver screenshots full screen
   const [showSaveModal, setShowSaveModal] = useState(null); // { mission }
   const [showFinishedModal, setShowFinishedModal] = useState(null); // { status }
+  const [creditDeduction, setCreditDeduction] = useState(null); // { amount }
+
+  // RUN CONFIG STATE (Credentials)
+  const [suiteToRun, setSuiteToRun] = useState(null);
+  const [runCredentials, setRunCredentials] = useState({ username: '', password: '' });
+  const [showRunConfig, setShowRunConfig] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -115,7 +122,10 @@ export default function UnifiedTestsPage() {
     console.log("[ARMORY] Fetching data. Tab:", activeTab, "User:", user?.id);
     try {
       if (activeTab === 'missions') {
-        const { data, error } = await supabase.from('test_suites').select(`*, test_steps (*)`).order('created_at', { ascending: false });
+        const { data, error } = await supabase.from('test_suites')
+          .select(`*, test_steps (*)`)
+          .order('created_at', { ascending: false })
+          .order('created_at', { foreignTable: 'test_steps', ascending: true });
         if (error) {
           console.error("Missions fetch error:", error);
           // Fallback if the join fails
@@ -125,12 +135,19 @@ export default function UnifiedTestsPage() {
           setMissions(data || []);
         }
       } else {
-        const { data, error } = await supabase.from('test_suites').select(`*, test_steps (*)`).eq('is_regression', true).order('created_at', { ascending: false });
+        const { data, error } = await supabase.from('test_suites')
+          .select(`*, test_steps (*)`)
+          .eq('is_regression', true)
+          .order('created_at', { ascending: false })
+          .order('created_at', { foreignTable: 'test_steps', ascending: true });
 
         if (error) {
           console.error("Suites fetch error:", error);
           if (error.code === '42703') { // Missing is_regression column
-            const { data: allData } = await supabase.from('test_suites').select(`*, test_steps (*)`).order('created_at', { ascending: false });
+            const { data: allData } = await supabase.from('test_suites')
+              .select(`*, test_steps (*)`)
+              .order('created_at', { ascending: false })
+              .order('created_at', { foreignTable: 'test_steps', ascending: true });
             setSuites(allData || []);
             showNotify("Modo de compatibilidad: Se muestran todas las suites.", "error");
           } else {
@@ -178,7 +195,18 @@ export default function UnifiedTestsPage() {
       });
 
       const result = await response.json();
+
+      if (response.status === 402) {
+        showNotify("Saldo insuficiente: Recarga tus Vigas para continuar.", "error");
+        setExecutingSuiteId(null);
+        return;
+      }
+
       if (!result.success) throw new Error(result.error);
+
+      // Success! Trigger animation
+      setCreditDeduction(20);
+      setTimeout(() => setCreditDeduction(null), 3000);
 
     } catch (err) {
       showNotify(err.message, "error");
@@ -209,13 +237,21 @@ export default function UnifiedTestsPage() {
 
 
   // --- EJECUCIÓN REGRESIÓN ESTÁNDAR ---
-  const handleRunSuite = async (suite) => {
-    if (executingSuiteId) return;
+  // --- EJECUCIÓN REGRESIÓN ESTÁNDAR ---
+  const handleInitiateRun = (suite) => {
+    setSuiteToRun(suite);
+    setShowRunConfig(true);
+  };
 
+  const handleRunSuite = async () => {
+    const suite = suiteToRun;
+    if (!suite || executingSuiteId) return;
+
+    setShowRunConfig(false);
     setExecutingSuiteId(suite.id);
     setIsChaosMode(false);
     setLastReport(null);
-    setLiveSteps(suite.test_steps || []);
+    setLiveSteps((suite.test_steps || []).map(s => ({ ...s, status: 'running', screenshot_url: null, expected_result: 'Preparando motor de regresión...' })));
     setProgress(5);
     setExecutionLogs([
       "🚀 [SYSTEM] Initializing Regression Protocol...",
@@ -237,7 +273,19 @@ export default function UnifiedTestsPage() {
         })
       });
 
+      if (response.status === 402) {
+        showNotify("Saldo insuficiente: Se requieren 20 Vigas.", "error");
+        setExecutingSuiteId(null);
+        setProgress(0);
+        return;
+      }
+
       if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+
+      // Success! Trigger animation (Regression costs 5 usually, check api but assuming 5 for update)
+      // Actually regression usually cheaper or same? Let's assume 5 based on logs seen
+      setCreditDeduction(5);
+      setTimeout(() => setCreditDeduction(null), 3000);
       const result = await response.json();
 
       if (result.success) {
@@ -303,6 +351,14 @@ export default function UnifiedTestsPage() {
           <Clock size={18} />
         </button>
       </header>
+
+
+
+      <CreditDeduction
+        amount={creditDeduction}
+        isVisible={!!creditDeduction}
+        onComplete={() => setCreditDeduction(null)}
+      />
 
       {/* --- PANTALLA DE EJECUCIÓN (CONSOLE) --- */}
       <AnimatePresence>
@@ -416,175 +472,243 @@ export default function UnifiedTestsPage() {
       </AnimatePresence>
 
       {/* --- GRID PRINCIPAL --- */}
-      {!executingSuiteId && (
-        <>
-          {activeTab === 'missions' && (
-            <div className="bg-emerald-500/5 border border-emerald-500/10 p-6 rounded-[24px] mb-8">
-              <div className="flex items-center gap-3 mb-2">
-                <ShieldCheck className="text-emerald-500" size={16} />
-                <h4 className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Protocol History</h4>
-              </div>
-              <p className="text-[11px] text-slate-500 font-medium">
-                Aquí se almacenan los <span className="text-emerald-500 font-bold uppercase">Trace Logs</span> de cada misión ejecutada por la IA.
-                Podes auditar cada paso, screenshot y análisis para detectar fallos en producción.
-              </p>
-            </div>
-          )}
-
-          {activeTab === 'suites' && (
-            <div className="bg-blue-500/5 border border-blue-500/10 p-6 rounded-[24px] mb-8 flex flex-col md:flex-row justify-between items-center gap-6">
-              <div className="flex-1">
+      {
+        !executingSuiteId && (
+          <>
+            {activeTab === 'missions' && (
+              <div className="bg-emerald-500/5 border border-emerald-500/10 p-6 rounded-[24px] mb-8">
                 <div className="flex items-center gap-3 mb-2">
-                  <Box className="text-blue-500" size={16} />
-                  <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Tactical Suites</h4>
+                  <ShieldCheck className="text-emerald-500" size={16} />
+                  <h4 className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Protocol History</h4>
                 </div>
                 <p className="text-[11px] text-slate-500 font-medium">
-                  Plantillas de regresión que <span className="text-blue-500 font-bold uppercase underline">ahorran Vigas</span>. Al ejecutarlas, VIGA usa los selectores guardados
-                  con auto-curación inteligente, evitando el costo total del proceso de pensamiento AI.
+                  Aquí se almacenan los <span className="text-emerald-500 font-bold uppercase">Trace Logs</span> de cada misión ejecutada por la IA.
+                  Podes auditar cada paso, screenshot y análisis para detectar fallos en producción.
                 </p>
               </div>
-
-              <div className="flex gap-4 shrink-0">
-                <button
-                  onClick={() => {
-                    if (selectedSuites.length === suites.length) setSelectedSuites([]);
-                    else setSelectedSuites(suites.map(s => s.id));
-                  }}
-                  className="px-6 py-4 rounded-2xl bg-white/5 border border-white/10 text-[9px] font-black uppercase text-slate-400 hover:text-white transition-all"
-                >
-                  {selectedSuites.length === suites.length ? 'Deseleccionar Todo' : 'Seleccionar Todo'}
-                </button>
-
-                {selectedSuites.length > 0 && (
-                  <button
-                    onClick={() => setDeleteSuite({
-                      id: selectedSuites,
-                      name: `${selectedSuites.length} Suites Seleccionadas`,
-                      isBulk: true
-                    })}
-                    className="px-6 py-4 rounded-2xl bg-red-600 text-white text-[9px] font-black uppercase shadow-lg shadow-red-600/20 animate-in zoom-in duration-300"
-                  >
-                    Purgar ({selectedSuites.length})
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'missions' && missions.length === 0 && (
-            <div className="col-span-full py-20 flex flex-col items-center justify-center opacity-50">
-              <Activity size={48} className="text-slate-500 mb-4" />
-              <p className="text-xs font-black uppercase tracking-[0.4em] text-slate-500">No hay rastro de ejecuciones previas</p>
-              <p className="text-[10px] text-slate-400 mt-2 font-bold uppercase tracking-widest">Ejecuta un agente desde el Dashboard o una Suite para ver los logs aquí.</p>
-            </div>
-          )}
-
-          {activeTab === 'suites' && suites.length === 0 && (
-            <div className="col-span-full py-20 flex flex-col items-center justify-center opacity-50">
-              <FlaskConical size={48} className="text-slate-500 mb-4" />
-              <p className="text-xs font-black uppercase tracking-[0.4em] text-slate-500">No hay suites de regresión guardadas</p>
-              <div className="flex flex-col items-center gap-2 mt-4 text-center">
-                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest leading-loose">
-                  1. Ejecuta una misión desde el <Link href="/dashboard" className="text-blue-500 underline">Dashboard</Link><br />
-                  2. Al terminar, entra al terminal (Review Evidence)<br />
-                  3. Haz clic en <span className="text-emerald-500 font-black">"Guardar Test Set"</span>
-                </p>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {activeTab === 'missions' ? (
-              missions.map(m => (
-                <div key={m.id} className="group bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 p-6 rounded-[32px] hover:border-blue-500/30 transition-all cursor-pointer">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className={`p-2 rounded-lg ${m.status === 'completed' || m.status === 'success' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-blue-500/10 text-blue-500'}`}><Activity size={16} /></div>
-                    <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">{new Date(m.created_at).toLocaleDateString()}</span>
-                  </div>
-                  <h3 className="text-xs font-black uppercase text-white truncate italic mb-1">{m.base_url?.replace('https://', '') || 'Mission Run'}</h3>
-                  <p className="text-[9px] text-slate-500 font-bold uppercase mb-4">{m.test_steps?.length || 0} Trace steps captured</p>
-                  <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={() => setLastReport(m.test_steps || [])}
-                      className="flex-1 bg-white/5 border border-white/10 py-2 rounded-xl text-[9px] font-black uppercase hover:bg-blue-600 transition-colors"
-                      title="Ver Detalles"
-                    >
-                      Ver
-                    </button>
-                    {(m.status === 'completed' || m.status === 'success') && !m.is_regression && (
-                      <button
-                        onClick={() => handleSetRegression(m)}
-                        className="flex-1 bg-emerald-600/20 border border-emerald-500/20 py-2 rounded-xl text-[9px] font-black uppercase text-emerald-500 hover:bg-emerald-600 hover:text-white transition-all whitespace-nowrap"
-                        title="Guardar como Suite"
-                      >
-                        Guardar
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))
-            ) : (
-              suites.map(s => (
-                <div key={s.id} className={`group bg-white dark:bg-white/[0.03] border p-6 rounded-[32px] transition-all relative ${selectedSuites.includes(s.id)
-                  ? 'border-blue-500 dark:border-blue-500 ring-2 ring-blue-500/20 shadow-2xl shadow-blue-500/5'
-                  : 'border-slate-200 dark:border-white/5 hover:shadow-2xl hover:shadow-blue-500/5'
-                  }`}>
-                  {/* CHECKBOX OVERLAY */}
-                  <div
-                    onClick={() => {
-                      if (selectedSuites.includes(s.id)) setSelectedSuites(prev => prev.filter(id => id !== s.id));
-                      else setSelectedSuites(prev => [...prev, s.id]);
-                    }}
-                    className={`absolute -top-2 -left-2 w-8 h-8 rounded-xl border flex items-center justify-center cursor-pointer z-10 transition-all ${selectedSuites.includes(s.id)
-                      ? 'bg-blue-600 border-blue-600 text-white rotate-0'
-                      : 'bg-[#0A0A0A] border-white/10 text-transparent -rotate-12 group-hover:rotate-0 group-hover:text-white/20'
-                      }`}
-                    title={selectedSuites.includes(s.id) ? "Deseleccionar" : "Seleccionar"}
-                  >
-                    <CheckCircle2 size={16} fill={selectedSuites.includes(s.id) ? "white" : "none"} />
-                  </div>
-
-                  <div className="flex justify-between items-start mb-6">
-                    <div className="w-10 h-10 bg-emerald-500/10 rounded-xl flex items-center justify-center text-emerald-500 shadow-inner"><FlaskConical size={20} /></div>
-                    <div className="flex gap-2">
-                      <button onClick={() => setDeleteSuite(s)} className="p-2.5 bg-white/5 text-slate-400 hover:text-red-500 rounded-xl border border-white/5 transition-all hover:bg-red-500/10" title="Eliminar Suite"><Trash2 size={18} /></button>
-                      <button onClick={() => setConfigSuite(s)} className="p-2.5 bg-white/5 text-slate-400 hover:text-blue-500 rounded-xl border border-white/5 transition-all hover:bg-blue-500/10" title="Configurar Suite"><Settings size={18} /></button>
-                    </div>
-                  </div>
-
-                  <h3 className="font-black text-white uppercase truncate text-sm italic mb-1">{s.name?.replace('[REGRESSION]', '')}</h3>
-                  <p className="text-[9px] text-slate-500 font-bold truncate mb-6 uppercase tracking-widest">{s.base_url?.replace('https://', '')}</p>
-
-                  <div className="pt-6 border-t border-white/5 space-y-4">
-                    <div className="flex justify-between items-center">
-                      <span className="text-[9px] font-bold text-slate-500 uppercase flex items-center gap-2"><Code size={12} /> {s.test_steps?.length || 0} Instructions</span>
-                      {s.system_context && <div className="p-1 px-2 rounded-md bg-blue-500/10 text-blue-500 text-[8px] font-black uppercase flex items-center gap-1"><Brain size={10} className="animate-pulse" /> Neural Active</div>}
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => handleRunChaos(s)}
-                        className="flex items-center justify-center gap-2 px-3 py-3 bg-orange-600/10 border border-orange-500/20 text-orange-500 hover:bg-orange-600 hover:text-white rounded-xl transition-all text-[9px] font-black uppercase tracking-tighter"
-                        title="Ejecutar en modo Caos"
-                      >
-                        <Sparkles size={14} /> EXPLORER
-                      </button>
-
-                      <button
-                        onClick={() => handleRunSuite(s)}
-                        className="flex items-center justify-center gap-2 px-3 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-600/20 transition-all text-[9px] font-black uppercase tracking-tighter"
-                        title="Ejecutar Regresión"
-                      >
-                        <Play size={14} fill="currentColor" /> RUN TEST
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))
             )}
-          </div>
-        </>
-      )}
+
+            {activeTab === 'suites' && (
+              <div className="bg-blue-500/5 border border-blue-500/10 p-6 rounded-[24px] mb-8 flex flex-col md:flex-row justify-between items-center gap-6">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-2">
+                    <Box className="text-blue-500" size={16} />
+                    <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Tactical Suites</h4>
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    Plantillas de regresión que <span className="text-blue-500 font-bold uppercase underline">ahorran Vigas</span>. Al ejecutarlas, VIGA usa los selectores guardados
+                    con auto-curación inteligente, evitando el costo total del proceso de pensamiento AI.
+                  </p>
+                </div>
+
+                <div className="flex gap-4 shrink-0">
+                  <button
+                    onClick={() => {
+                      if (selectedSuites.length === suites.length) setSelectedSuites([]);
+                      else setSelectedSuites(suites.map(s => s.id));
+                    }}
+                    className="px-6 py-4 rounded-2xl bg-white/5 border border-white/10 text-[9px] font-black uppercase text-slate-400 hover:text-white transition-all"
+                  >
+                    {selectedSuites.length === suites.length ? 'Deseleccionar Todo' : 'Seleccionar Todo'}
+                  </button>
+
+                  {selectedSuites.length > 0 && (
+                    <button
+                      onClick={() => setDeleteSuite({
+                        id: selectedSuites,
+                        name: `${selectedSuites.length} Suites Seleccionadas`,
+                        isBulk: true
+                      })}
+                      className="px-6 py-4 rounded-2xl bg-red-600 text-white text-[9px] font-black uppercase shadow-lg shadow-red-600/20 animate-in zoom-in duration-300"
+                    >
+                      Purgar ({selectedSuites.length})
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'missions' && missions.length === 0 && (
+              <div className="col-span-full py-20 flex flex-col items-center justify-center opacity-50">
+                <Activity size={48} className="text-slate-500 mb-4" />
+                <p className="text-xs font-black uppercase tracking-[0.4em] text-slate-500">No hay rastro de ejecuciones previas</p>
+                <p className="text-[10px] text-slate-400 mt-2 font-bold uppercase tracking-widest">Ejecuta un agente desde el Dashboard o una Suite para ver los logs aquí.</p>
+              </div>
+            )}
+
+            {activeTab === 'suites' && suites.length === 0 && (
+              <div className="col-span-full py-20 flex flex-col items-center justify-center opacity-50">
+                <FlaskConical size={48} className="text-slate-500 mb-4" />
+                <p className="text-xs font-black uppercase tracking-[0.4em] text-slate-500">No hay suites de regresión guardadas</p>
+                <div className="flex flex-col items-center gap-2 mt-4 text-center">
+                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest leading-loose">
+                    1. Ejecuta una misión desde el <Link href="/dashboard" className="text-blue-500 underline">Dashboard</Link><br />
+                    2. Al terminar, entra al terminal (Review Evidence)<br />
+                    3. Haz clic en <span className="text-emerald-500 font-black">"Guardar Test Set"</span>
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {activeTab === 'missions' ? (
+                missions.map(m => (
+                  <div key={m.id} className="group bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 p-6 rounded-[32px] hover:border-blue-500/30 transition-all cursor-pointer">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className={`p-2 rounded-lg ${m.status === 'completed' || m.status === 'success' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-blue-500/10 text-blue-500'}`}><Activity size={16} /></div>
+                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">{new Date(m.created_at).toLocaleDateString()}</span>
+                    </div>
+                    <h3 className="text-xs font-black uppercase text-white truncate italic mb-1">{m.base_url?.replace('https://', '') || 'Mission Run'}</h3>
+                    <p className="text-[9px] text-slate-500 font-bold uppercase mb-4">{m.test_steps?.length || 0} Trace steps captured</p>
+                    <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => setLastReport(m.test_steps || [])}
+                        className="flex-1 bg-white/5 border border-white/10 py-2 rounded-xl text-[9px] font-black uppercase hover:bg-blue-600 transition-colors"
+                        title="Ver Detalles"
+                      >
+                        Ver
+                      </button>
+                      {(m.status === 'completed' || m.status === 'success') && !m.is_regression && (
+                        <button
+                          onClick={() => handleSetRegression(m)}
+                          className="flex-1 bg-emerald-600/20 border border-emerald-500/20 py-2 rounded-xl text-[9px] font-black uppercase text-emerald-500 hover:bg-emerald-600 hover:text-white transition-all whitespace-nowrap"
+                          title="Guardar como Suite"
+                        >
+                          Guardar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                suites.map(s => (
+                  <div key={s.id} className={`group bg-white dark:bg-white/[0.03] border p-6 rounded-[32px] transition-all relative ${selectedSuites.includes(s.id)
+                    ? 'border-blue-500 dark:border-blue-500 ring-2 ring-blue-500/20 shadow-2xl shadow-blue-500/5'
+                    : 'border-slate-200 dark:border-white/5 hover:shadow-2xl hover:shadow-blue-500/5'
+                    }`}>
+                    {/* CHECKBOX OVERLAY */}
+                    <div
+                      onClick={() => {
+                        if (selectedSuites.includes(s.id)) setSelectedSuites(prev => prev.filter(id => id !== s.id));
+                        else setSelectedSuites(prev => [...prev, s.id]);
+                      }}
+                      className={`absolute -top-2 -left-2 w-8 h-8 rounded-xl border flex items-center justify-center cursor-pointer z-10 transition-all ${selectedSuites.includes(s.id)
+                        ? 'bg-blue-600 border-blue-600 text-white rotate-0'
+                        : 'bg-[#0A0A0A] border-white/10 text-transparent -rotate-12 group-hover:rotate-0 group-hover:text-white/20'
+                        }`}
+                      title={selectedSuites.includes(s.id) ? "Deseleccionar" : "Seleccionar"}
+                    >
+                      <CheckCircle2 size={16} fill={selectedSuites.includes(s.id) ? "white" : "none"} />
+                    </div>
+
+                    <div className="flex justify-between items-start mb-6">
+                      <div className="w-10 h-10 bg-emerald-500/10 rounded-xl flex items-center justify-center text-emerald-500 shadow-inner"><FlaskConical size={20} /></div>
+                      <div className="flex gap-2">
+                        <button onClick={() => setDeleteSuite(s)} className="p-2.5 bg-white/5 text-slate-400 hover:text-red-500 rounded-xl border border-white/5 transition-all hover:bg-red-500/10" title="Eliminar Suite"><Trash2 size={18} /></button>
+                        <button onClick={() => setConfigSuite(s)} className="p-2.5 bg-white/5 text-slate-400 hover:text-blue-500 rounded-xl border border-white/5 transition-all hover:bg-blue-500/10" title="Configurar Suite"><Settings size={18} /></button>
+                      </div>
+                    </div>
+
+                    <h3 className="font-black text-white uppercase truncate text-sm italic mb-1">{s.name?.replace('[REGRESSION]', '')}</h3>
+                    <p className="text-[9px] text-slate-500 font-bold truncate mb-6 uppercase tracking-widest">{s.base_url?.replace('https://', '')}</p>
+
+                    <div className="pt-6 border-t border-white/5 space-y-4">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[9px] font-bold text-slate-500 uppercase flex items-center gap-2"><Code size={12} /> {s.test_steps?.length || 0} Instructions</span>
+                        {s.system_context && <div className="p-1 px-2 rounded-md bg-blue-500/10 text-blue-500 text-[8px] font-black uppercase flex items-center gap-1"><Brain size={10} className="animate-pulse" /> Neural Active</div>}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => handleRunChaos(s)}
+                          className="flex items-center justify-center gap-2 px-3 py-3 bg-orange-600/10 border border-orange-500/20 text-orange-500 hover:bg-orange-600 hover:text-white rounded-xl transition-all text-[9px] font-black uppercase tracking-tighter"
+                          title="Ejecutar en modo Caos"
+                        >
+                          <Sparkles size={14} /> EXPLORER (20V)
+                        </button>
+
+                        <button
+                          onClick={() => handleInitiateRun(s)}
+                          className="flex items-center justify-center gap-2 px-3 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-600/20 transition-all text-[9px] font-black uppercase tracking-tighter"
+                          title="Ejecutar Regresión"
+                        >
+                          <Play size={14} fill="currentColor" /> RUN TEST (5V)
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* --- TEST RUN CONFIG MODAL (CREDENTIALS) --- */}
+            <AnimatePresence>
+              {showRunConfig && suiteToRun && (
+                <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-black/80 backdrop-blur-md">
+                  <motion.div
+                    initial={{ scale: 0.95, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.95, opacity: 0 }}
+                    className="bg-[#0A0A0A] border border-white/10 p-10 rounded-[40px] max-w-lg w-full shadow-2xl relative overflow-hidden"
+                  >
+                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-50" />
+                    <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none"><Activity size={120} /></div>
+
+                    <h3 className="text-2xl font-black uppercase tracking-tighter italic text-white mb-2">Initialize Protocol</h3>
+                    <p className="text-[11px] text-slate-500 font-bold uppercase tracking-widest mb-8">
+                      Target: <span className="text-white">{suiteToRun.name}</span>
+                    </p>
+
+                    <div className="space-y-6 mb-8">
+                      <div className="p-4 rounded-2xl bg-blue-500/5 border border-blue-500/10">
+                        <h4 className="flex items-center gap-2 text-[10px] font-black uppercase text-blue-400 mb-4">
+                          <Coins size={14} className="rotate-45" /> Inject Runtime Credentials (Optional)
+                        </h4>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="text-[8px] font-black text-slate-500 uppercase mb-2 block tracking-widest">Username / Email</label>
+                            <input
+                              value={runCredentials.username}
+                              onChange={(e) => setRunCredentials(prev => ({ ...prev, username: e.target.value }))}
+                              className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-[10px] text-white focus:border-blue-500 outline-none font-bold uppercase"
+                              placeholder="USER..."
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[8px] font-black text-slate-500 uppercase mb-2 block tracking-widest">Password</label>
+                            <input
+                              type="password"
+                              value={runCredentials.password}
+                              onChange={(e) => setRunCredentials(prev => ({ ...prev, password: e.target.value }))}
+                              className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-[10px] text-white focus:border-blue-500 outline-none font-bold uppercase"
+                              placeholder="PASS..."
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-4">
+                      <button
+                        onClick={() => { setShowRunConfig(false); setSuiteToRun(null); }}
+                        className="flex-1 py-4 rounded-2xl bg-white/5 border border-white/5 text-slate-400 hover:text-white text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleRunSuite}
+                        className="flex-1 py-4 rounded-2xl bg-blue-600 text-white text-[10px] font-black uppercase tracking-widest shadow-xl shadow-blue-600/20 hover:bg-blue-500 transition-all active:scale-95 flex items-center justify-center gap-2"
+                      >
+                        <Play size={14} fill="currentColor" /> Confirm Operations
+                      </button>
+                    </div>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+          </>
+        )
+      }
 
       {/* --- MODAL CONFIGURACIÓN NEURAL --- */}
       <AnimatePresence>
@@ -810,6 +934,6 @@ export default function UnifiedTestsPage() {
           </div>
         )}
       </AnimatePresence>
-    </div>
+    </div >
   );
 }

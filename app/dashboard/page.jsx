@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Activity, Globe, Zap, Target, ChevronUp, ScanLine, Crosshair, Coins, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Activity, Globe, Zap, Target, ChevronUp, Coins, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createClient } from '@supabase/supabase-js';
 import { useTheme } from '../contexts/ThemeContext';
@@ -15,19 +15,21 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
-
 export default function MissionControlPage() {
   const [url, setUrl] = useState('');
   const [chaosOpen, setChaosOpen] = useState(false);
   const [testCases, setTestCases] = useState([]);
   const [status, setStatus] = useState('idle');
-  const [missionMode, setMissionMode] = useState('scout');
+  const [missionMode, setMissionMode] = useState('chaos');
   const [missionGoal, setMissionGoal] = useState('');
   const [activeSuiteId, setActiveSuiteId] = useState(null);
-  const [suiteStatus, setSuiteStatus] = useState('idle'); // idle, running, completed, failed
+  const [suiteStatus, setSuiteStatus] = useState('idle');
   const [showCompletionModal, setShowCompletionModal] = useState(false);
   const [isSaveInputOpen, setIsSaveInputOpen] = useState(false);
   const [saveName, setSaveName] = useState('');
+  const [notification, setNotification] = useState(null);
+  const [credentials, setCredentials] = useState({ username: '', password: '' });
+  const [showCredentials, setShowCredentials] = useState(false);
   const { theme } = useTheme();
   const { user, profile, refreshProfile } = useAuth();
   const vigaBalance = profile?.vigas_balance;
@@ -35,62 +37,49 @@ export default function MissionControlPage() {
 
   useEffect(() => {
     if (user) refreshProfile();
-  }, [user, status]); // Refetch when status changes (post-run)
+  }, [user, status]);
 
-  // --- LÓGICA DE REALTIME ---
   useEffect(() => {
     if (!activeSuiteId) return;
-
-    // Suscribirse a Pasos de ejecución
     const stepsChannel = supabase.channel(`steps-${activeSuiteId}`)
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'test_steps',
-        filter: `suite_id=eq.${activeSuiteId}`
-      }, (p) => {
-        const newStep = {
-          ...p.new,
-          screenshot_url: p.new.screenshot_url,
-          title: p.new.title,
-          status: p.new.status
-        };
-        setTestCases(prev => [...prev, newStep]);
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'test_steps', filter: `suite_id=eq.${activeSuiteId}` }, (p) => {
+        setTestCases(prev => [...prev, { ...p.new }]);
       })
       .subscribe();
-
-    // Suscribirse al Estado de la Suite (Notificación de fin)
     const suiteChannel = supabase.channel(`suite-status-${activeSuiteId}`)
-      .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'test_suites',
-        filter: `id=eq.${activeSuiteId}`
-      }, (p) => {
-        const newStatus = p.new.status;
-        if (newStatus === 'completed' || newStatus === 'failed') {
-          setSuiteStatus(newStatus);
-          setStatus('idle'); // Liberamos el dashboard para otra run
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'test_suites', filter: `id=eq.${activeSuiteId}` }, (p) => {
+        if (['completed', 'failed'].includes(p.new.status)) {
+          setSuiteStatus(p.new.status);
+          setStatus('idle');
           setShowCompletionModal(true);
         }
       })
       .subscribe();
-
     return () => {
       supabase.removeChannel(stepsChannel);
       supabase.removeChannel(suiteChannel);
     };
   }, [activeSuiteId]);
 
+  const showNotify = (message, type = 'success') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 4000);
+  };
+
   const handleStartMission = async () => {
     if (!url) return;
+    const urlPattern = /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([/\w .-]*)*\/?$/;
+    if (!urlPattern.test(url)) {
+      showNotify("Invalid URL", "error");
+      return;
+    }
+
     setTestCases([]);
     setStatus('running');
     setSuiteStatus('running');
     setShowCompletionModal(false);
-    setChaosOpen(true); // Auto-open terminal on start
+    setChaosOpen(true);
 
-    // Create Suite
     const { data: suite } = await supabase.from('test_suites').insert([{
       name: `${missionMode.toUpperCase()}: ${url} ${missionGoal ? '(' + missionGoal + ')' : ''}`,
       base_url: url,
@@ -106,36 +95,36 @@ export default function MissionControlPage() {
           url,
           suite_id: suite.id,
           goal: missionGoal,
-          userId: user?.id
+          userId: user?.id,
+          credentials: (credentials.username || credentials.password) ? credentials : null
         })
       });
     }
   };
 
   const handleSaveAsSuite = async () => {
-    if (!saveName) {
-      setIsSaveInputOpen(true);
-      return;
-    }
-
+    if (!saveName) { setIsSaveInputOpen(true); return; }
     const { error } = await supabase.from('test_suites').update({
       name: `[REGRESSION] ${saveName}`,
       is_regression: true
     }).eq('id', activeSuiteId);
-
-    if (!error) {
-      setIsSaveInputOpen(false);
-      setShowCompletionModal(false);
-      setSaveName('');
-    }
+    if (!error) { setIsSaveInputOpen(false); setShowCompletionModal(false); setSaveName(''); }
   };
 
   return (
-    <div className={`min-h-screen pb-32 ${isDark ? 'bg-[#050505] text-white' : 'bg-slate-50'}`}>
-      <div className="max-w-7xl mx-auto px-6">
+    <div className={`min-h-screen ${isDark ? 'bg-[#050505] text-white' : 'bg-slate-50'}`}>
+      <div className="max-w-7xl mx-auto px-6 py-12">
+        <AnimatePresence>
+          {notification && (
+            <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="fixed top-10 left-1/2 -translate-x-1/2 z-[300]">
+              <div className={`px-6 py-3 rounded-2xl shadow-2xl border flex items-center gap-3 backdrop-blur-xl ${notification.type === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500'}`}>
+                <span className="text-[10px] font-black uppercase tracking-widest">{notification.message}</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-        {/* FEEDBACK BUBBLE (FOR ALL MODES) */}
-        {status === 'running' && (
+        {status === 'running' && activeSuiteId && (
           <AgentFloatingBubble
             mode={missionMode}
             total={testCases.length}
@@ -146,125 +135,51 @@ export default function MissionControlPage() {
           />
         )}
 
-        <ChaosTerminal
-          open={chaosOpen}
-          suiteId={activeSuiteId}
-          onClose={() => setChaosOpen(false)}
-        />
+        <ChaosTerminal open={chaosOpen} suiteId={activeSuiteId} onClose={() => setChaosOpen(false)} />
 
-        {/* MODAL DE FINALIZACIÓN */}
         <AnimatePresence>
           {showCompletionModal && (
-            <motion.div
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[10001] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
-            >
-              <motion.div
-                initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }}
-                className={`w-full max-w-md p-8 rounded-[40px] border shadow-2xl ${isDark ? 'bg-[#0a0a0a] border-white/10' : 'bg-white border-slate-200'}`}
-              >
-                <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-6 ${suiteStatus === 'completed' ? 'bg-emerald-500/20 text-emerald-500' : 'bg-red-500/20 text-red-500'}`}>
-                  {suiteStatus === 'completed' ? <CheckCircle2 size={32} /> : <AlertTriangle size={32} />}
-                </div>
-
-                <h3 className="text-2xl font-black italic uppercase tracking-tighter mb-2">
-                  Mission <span className={suiteStatus === 'completed' ? 'text-emerald-500' : 'text-red-500'}>{suiteStatus}</span>
-                </h3>
-                <p className="text-sm text-slate-500 mb-8 leading-relaxed">
-                  The operative has finished the <span className="font-bold text-slate-300 uppercase">{missionMode}</span> protocol.
-                  All evidence has been stored in the archives.
-                </p>
-
-                <div className="flex flex-col gap-3">
-                  {isSaveInputOpen ? (
-                    <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                      <input
-                        autoFocus
-                        className="w-full bg-white/5 border border-white/10 p-4 rounded-xl text-[10px] uppercase font-black tracking-widest text-white outline-none focus:border-emerald-500"
-                        placeholder="SUITE NAME (E.G. USER LOGIN)"
-                        value={saveName}
-                        onChange={(e) => setSaveName(e.target.value)}
-                      />
-                      <button
-                        onClick={handleSaveAsSuite}
-                        className="w-full py-4 rounded-2xl bg-emerald-600 text-white text-[10px] font-black uppercase tracking-widest shadow-xl shadow-emerald-600/20 transition-all hover:scale-105 active:scale-95"
-                      >
-                        Confirmar Guardado
-                      </button>
-                      <button
-                        onClick={() => setIsSaveInputOpen(false)}
-                        className="w-full py-4 rounded-2xl bg-white/5 text-slate-500 text-[10px] font-black uppercase tracking-widest"
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => { setChaosOpen(true); setShowCompletionModal(false); }}
-                        className="w-full py-4 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/5 text-[10px] font-black uppercase tracking-widest transition-all"
-                      >
-                        Review Evidence
-                      </button>
-                      {suiteStatus === 'completed' && (
-                        <button
-                          onClick={() => setIsSaveInputOpen(true)}
-                          className="w-full py-4 rounded-2xl bg-emerald-600/20 border border-emerald-500/20 text-emerald-500 text-[10px] font-black uppercase tracking-widest hover:bg-emerald-600 hover:text-white transition-all shadow-lg shadow-emerald-600/10"
-                        >
-                          Save as Regression Suite
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setShowCompletionModal(false)}
-                        className="w-full py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all"
-                      >
-                        Acknowledge
-                      </button>
-                    </>
-                  )}
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[10001] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm">
+              <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className={`w-full max-w-md p-8 rounded-[40px] border shadow-2xl ${isDark ? 'bg-[#0a0a0a] border-white/10' : 'bg-white border-slate-200'}`}>
+                <div className="text-center mb-6">
+                  <h3 className="text-2xl font-black italic uppercase tracking-tighter mb-2">Run {suiteStatus}</h3>
+                  <div className="flex flex-col gap-2">
+                    <button onClick={() => setShowCompletionModal(false)} className="w-full py-4 rounded-xl bg-blue-600 text-white font-black text-xs uppercase hover:bg-blue-500">Close</button>
+                  </div>
                 </div>
               </motion.div>
             </motion.div>
           )}
         </AnimatePresence>
 
-        <header className="py-12 border-b border-white/5 mb-12 flex items-end justify-between">
-          <div>
-            <div className="flex items-center gap-2 text-[10px] font-black uppercase text-blue-500 tracking-[0.4em] mb-2">
-              <Activity size={14} className="animate-pulse" /> Swarm Intel v2.0
-            </div>
-            <h1 className="text-6xl font-black tracking-tighter uppercase italic">
-              Audit <span className="text-blue-600">Orchestrator</span>
-            </h1>
+        {/* HEADER */}
+        <header className="mb-16">
+          <div className="flex items-center gap-3 mb-2">
+            <span className="text-[9px] font-black uppercase tracking-[0.3em] text-blue-600">⚡ Swarm Intel v2.0</span>
           </div>
-
-          {vigaBalance !== undefined && vigaBalance !== null && (
-            <div className={`px-6 py-3 rounded-2xl border flex items-center gap-3 backdrop-blur-xl animate-in slide-in-from-right-10 ${vigaBalance > 0
-              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500'
-              : 'bg-red-500/10 border-red-500/20 text-red-500'
-              }`}>
-              <div className="relative">
-                <div className="absolute inset-0 bg-current blur-md animate-pulse opacity-50" />
-                <Coins size={20} className="relative" />
-              </div>
-              <div>
-                <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Available Fuel</p>
-                <p className="text-2xl font-black italic tabular-nums leading-none tracking-tight">{vigaBalance.toLocaleString()} <span className="text-xs not-italic font-bold opacity-60">VIGAS</span></p>
-              </div>
+          <div className="flex items-center justify-between">
+            <h1 className="text-6xl font-black tracking-tighter uppercase italic leading-none">
+              AUDIT <span className="text-blue-600">ORCHESTRATOR</span>
+            </h1>
+            <div className={`px-8 py-4 rounded-2xl border ${isDark ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-emerald-50 border-emerald-200'}`}>
+              <p className="text-[9px] font-black uppercase tracking-widest text-emerald-600 mb-1">Available Fuel</p>
+              <p className="text-3xl font-black italic tabular-nums text-emerald-600">{vigaBalance?.toLocaleString() || 0} <span className="text-sm not-italic opacity-60">VIGAS</span></p>
             </div>
-          )}
+          </div>
         </header>
 
-        {/* INPUTS SECTION */}
-        <div className={`p-8 rounded-[50px] border mb-12 ${isDark ? 'bg-white/5 border-white/5 shadow-2xl' : 'bg-white shadow-xl'}`}>
-          <div className="flex flex-col gap-8">
-            <div className="flex gap-2 p-1.5 bg-black/40 w-fit rounded-full border border-white/5">
-              {['scout', 'chaos', 'strike'].map((m) => (
+        {/* HORIZONTAL INPUT LAYOUT */}
+        <div className={`p-1 rounded-[24px] border mb-16 ${isDark ? 'bg-white/[0.02] border-white/5' : 'bg-white border-slate-200 shadow-xl'}`}>
+          <div className={`rounded-[20px] p-6 ${isDark ? 'bg-[#0A0A0A]' : 'bg-slate-50/50'}`}>
+
+            {/* MODE SELECTOR */}
+            <div className="flex items-center gap-2 mb-6">
+              {['chaos', 'strike'].map((m) => (
                 <button
                   key={m} onClick={() => setMissionMode(m)}
-                  className={`px-8 py-3 rounded-full text-[10px] font-black uppercase transition-all ${missionMode === m
-                    ? (m === 'scout' ? 'bg-blue-600' : m === 'chaos' ? 'bg-orange-600' : 'bg-purple-600 text-white')
-                    : 'text-slate-500 hover:text-white'
+                  className={`px-5 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${missionMode === m
+                      ? (m === 'chaos' ? 'bg-orange-600 text-white shadow-lg shadow-orange-600/20' : 'bg-purple-600 text-white shadow-lg shadow-purple-600/20')
+                      : (isDark ? 'text-slate-500 hover:text-white bg-white/5' : 'text-slate-400 hover:text-slate-800 bg-slate-100')
                     }`}
                 >
                   {m}
@@ -272,38 +187,74 @@ export default function MissionControlPage() {
               ))}
             </div>
 
-            <div className="flex flex-col md:flex-row gap-4">
-              <div className="flex-[2] flex items-center gap-4 px-8 py-5 rounded-full border border-white/10 bg-black/20">
-                <Globe size={18} className="text-slate-500" />
-                <input
-                  value={url} onChange={(e) => setUrl(e.target.value)}
-                  placeholder="TARGET URL..."
-                  className="bg-transparent border-none outline-none text-xs font-black w-full uppercase tracking-widest text-white"
-                />
-              </div>
-
-              {missionMode === 'strike' && (
-                <div className="flex-1 flex items-center gap-4 px-8 py-5 rounded-full border border-purple-500/30 bg-purple-500/5 animate-in slide-in-from-left-4">
-                  <Target size={18} className="text-purple-500" />
+            {/* HORIZONTAL GRID */}
+            <div className="flex gap-3">
+              {/* LEFT SIDE: INPUTS */}
+              <div className="flex-1 flex flex-col gap-3">
+                {/* URL */}
+                <div className={`flex items-center gap-4 px-5 py-3 rounded-xl border ${isDark ? 'bg-black/40 border-white/10' : 'bg-white border-slate-200'}`}>
+                  <Globe size={16} className={isDark ? "text-slate-600" : "text-slate-400"} />
                   <input
-                    value={missionGoal} onChange={(e) => setMissionGoal(e.target.value)}
-                    placeholder="STRIKE GOAL..."
-                    className="bg-transparent border-none outline-none text-xs font-black w-full uppercase tracking-widest text-purple-200"
+                    value={url} onChange={(e) => setUrl(e.target.value)}
+                    placeholder="TARGET URL..."
+                    className={`bg-transparent border-none outline-none text-sm font-black w-full uppercase tracking-widest placeholder-slate-500 ${isDark ? 'text-white' : 'text-slate-800'}`}
                   />
                 </div>
-              )}
 
+                {/* STRIKE GOAL */}
+                <AnimatePresence>
+                  {missionMode === 'strike' && (
+                    <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                      <div className={`flex items-center gap-4 px-5 py-3 rounded-xl border ${isDark ? 'bg-purple-500/5 border-purple-500/20' : 'bg-purple-50 border-purple-200'}`}>
+                        <Target size={16} className="text-purple-500" />
+                        <input
+                          value={missionGoal} onChange={(e) => setMissionGoal(e.target.value)}
+                          placeholder="STRIKE GOAL..."
+                          className={`bg-transparent border-none outline-none text-xs font-black w-full uppercase tracking-widest ${isDark ? 'text-purple-200 placeholder-purple-500/30' : 'text-purple-900 placeholder-purple-300'}`}
+                        />
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* CREDENTIALS */}
+                <div className={`overflow-hidden rounded-xl border transition-all ${showCredentials ? (isDark ? 'border-white/10 bg-white/5' : 'border-slate-200 bg-white') : 'border-transparent'}`}>
+                  <button
+                    onClick={() => setShowCredentials(!showCredentials)}
+                    className={`w-full flex items-center justify-between px-3 py-2 text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
+                  >
+                    <span className="flex items-center gap-2">
+                      {showCredentials ? <ChevronUp size={10} /> : <Coins size={10} className="rotate-45" />}
+                      {showCredentials ? 'Hide Auth' : 'Add Credentials'}
+                    </span>
+                  </button>
+                  <AnimatePresence>
+                    {showCredentials && (
+                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
+                        <div className="p-3 pt-0 grid grid-cols-2 gap-3">
+                          <input value={credentials.username} onChange={(e) => setCredentials(prev => ({ ...prev, username: e.target.value }))} placeholder="USERNAME" className={`w-full bg-transparent px-3 py-2 rounded-lg border text-[10px] font-bold outline-none uppercase ${isDark ? 'bg-black/20 border-white/5 text-white' : 'bg-slate-50 border-slate-200 text-slate-800'}`} />
+                          <input type="password" value={credentials.password} onChange={(e) => setCredentials(prev => ({ ...prev, password: e.target.value }))} placeholder="PASSWORD" className={`w-full bg-transparent px-3 py-2 rounded-lg border text-[10px] font-bold outline-none uppercase ${isDark ? 'bg-black/20 border-white/5 text-white' : 'bg-slate-50 border-slate-200 text-slate-800'}`} />
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
+
+              {/* RIGHT SIDE: DEPLOY BUTTON */}
               <button
                 onClick={handleStartMission}
-                className="bg-blue-600 hover:bg-blue-500 px-12 py-5 rounded-full font-black text-[10px] uppercase transition-all shadow-lg shadow-blue-600/20 active:scale-95 text-white"
+                className="w-48 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-600/20 transition-all hover:translate-y-[-1px] flex items-center justify-center gap-3 group self-start"
               >
-                Launch Swarm
+                <span className="text-[10px] font-black uppercase tracking-[0.2em]">Deploy Agent</span>
+                <Zap size={14} className="fill-white group-hover:scale-110 transition-transform" />
               </button>
             </div>
+
           </div>
         </div>
 
-        <div className="max-w-5xl">
+        <div className="max-w-5xl mx-auto">
           {status === 'running' ? (
             <div className="py-24 text-center">
               <div className="flex items-center justify-center gap-2 text-slate-500 text-[10px] font-black uppercase tracking-[0.4em] mb-8">

@@ -18,10 +18,16 @@ const normalizeUrl = (input: string): string => {
 
 export async function POST(req: Request) {
   try {
-    const { url, suite_id, userId } = await req.json()
+    const { url, suite_id, userId, credentials } = await req.json()
 
     if (!url || !suite_id) {
       return NextResponse.json({ error: 'Missing parameters' }, { status: 400 })
+    }
+
+    // BACKEND VALIDATION
+    const urlPattern = /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([/\w .-]*)*\/?$/
+    if (!urlPattern.test(url)) {
+      return NextResponse.json({ error: 'Invalid URL format' }, { status: 400 })
     }
 
     if (!userId) {
@@ -40,7 +46,7 @@ export async function POST(req: Request) {
 
     await qstash.publishJSON({
       url: `${baseUrl}/api/worker/chaos`,
-      body: { url: targetUrl, suite_id },
+      body: { url: targetUrl, suite_id, credentials },
       retries: 0,
       deduplicationId: `viga-chaos-run-${suite_id}`,
       headers: { "ngrok-skip-browser-warning": "true" }

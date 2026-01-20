@@ -12,7 +12,7 @@ export const maxDuration = 300;
 async function handler(req: Request) {
   try {
     const body = await req.json();
-    const { url, suite_id } = body;
+    const { url, suite_id, credentials } = body;
 
     if (!url || !suite_id) {
       return NextResponse.json({ error: "Missing parameters" }, { status: 400 });
@@ -21,7 +21,7 @@ async function handler(req: Request) {
     console.log(`[VIGA-WORKER] 🚀 Disparando Misión Chaos en Background...`);
 
     // 🔥 CAMBIO: Usamos await para que el worker no muera antes de tiempo
-    await runChaosAgent(url, suite_id);
+    await runChaosAgent(url, suite_id, credentials);
     console.log(`[VIGA-WORKER] ✅ Ejecución de fondo terminada: ${suite_id}`);
 
     // ✅ RESPONDEMOS DE INMEDIATO: QStash recibe esto y se queda tranquilo

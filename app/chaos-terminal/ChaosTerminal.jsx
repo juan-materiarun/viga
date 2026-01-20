@@ -36,18 +36,36 @@ export default function ChaosTerminal({ suiteId, open, onClose }) {
     if (!suiteId || !open) return;
     setSteps([]);
 
-    supabase.from('test_steps')
-      .select('*')
-      .eq('suite_id', suiteId)
-      .order('created_at', { ascending: true })
-      .then(({ data }) => {
-        if (data) {
-          // Add types to initial steps
-          const formattedSteps = data.map(s => ({ ...s, type: 'step' }));
-          setSteps(formattedSteps);
-          const lastWithImg = data.slice().reverse().find(s => s.screenshot_url);
-          if (lastWithImg) setSelectedStep(lastWithImg);
-        }
+    // First, check if this is a fresh run
+    supabase.from('test_suites')
+      .select('status')
+      .eq('id', suiteId)
+      .single()
+      .then(({ data: suite }) => {
+        const isRunning = suite?.status === 'running';
+
+        supabase.from('test_steps')
+          .select('*')
+          .eq('suite_id', suiteId)
+          .order('created_at', { ascending: true })
+          .then(({ data }) => {
+            if (data) {
+              // If suite is running, clear ALL screenshots for a fresh visual start
+              // Otherwise, only clear screenshots for incomplete steps
+              const formattedSteps = data.map(s => ({
+                ...s,
+                type: 'step',
+                screenshot_url: isRunning ? null : (s.status === 'success' || s.status === 'failed' ? s.screenshot_url : null)
+              }));
+              setSteps(formattedSteps);
+
+              // Only set selected step if we have a completed step with screenshot
+              if (!isRunning) {
+                const lastWithImg = data.slice().reverse().find(s => s.screenshot_url);
+                if (lastWithImg) setSelectedStep(lastWithImg);
+              }
+            }
+          });
       });
 
     const channel = supabase.channel(`viga_live_${suiteId}`)
