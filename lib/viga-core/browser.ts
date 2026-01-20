@@ -3,7 +3,14 @@ import { chromium, Browser } from 'playwright'
 let browser: Browser | null = null
 
 export async function getBrowser(): Promise<Browser> {
-  if (browser) return browser
+  if (browser) {
+    if (browser.isConnected()) {
+      return browser
+    }
+    console.log('⚠️ Browser instance disconnected. Re-initializing...')
+    try { await browser.close() } catch { }
+    browser = null
+  }
 
   const isVercel = !!process.env.VERCEL
   const browserlessUrl = process.env.BROWSERLESS_URL

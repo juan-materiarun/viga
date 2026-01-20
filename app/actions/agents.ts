@@ -493,7 +493,15 @@ export async function runChaosAgent(url: string, suiteId: string, credentials?: 
     await vigaLog(suiteId, '🏁 Chaos Session Finalizada', 'success')
     await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId)
   } catch (e: any) {
-    await recordStep(suiteId, page, 'FATAL ERROR', 'failed', e.message)
+    console.error(`[CHAOS-CRITICAL] 💥 Fatal Loop Error: ${e.message}`)
+    console.error(e) // Print stack trace
+
+    try {
+      await recordStep(suiteId, page, 'FATAL ERROR', 'failed', `Critical failure: ${e.message}`)
+    } catch (recordErr: any) {
+      console.error(`[CHAOS-CRITICAL] ⚠️ Could not record fatal error step (browser likely dead): ${recordErr.message}`)
+    }
+
     await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
     throw e
   } finally {
