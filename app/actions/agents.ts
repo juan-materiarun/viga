@@ -62,7 +62,13 @@ async function recordStep(
     action_payload: actionData?.payload
   })
 
-  if (error) console.error('Error saving step:', error)
+  if (error) {
+    if (error.code === '23505') {
+      console.log(`[DB] ⚠️ Duplicate step ID avoided (idempotency check passed).`)
+    } else {
+      console.error('Error saving step:', error)
+    }
+  }
 }
 
 async function updateStep(

@@ -3,7 +3,9 @@ import { chromium, Browser } from 'playwright'
 let browser: Browser | null = null
 
 export async function getBrowser(): Promise<Browser> {
-  if (browser) {
+  // DISABLE CACHE FOR REMOTE: Always force fresh connection to avoid shared state zombies/disconnects
+  // This ensures each agent run has its own isolated WebSocket to Browserless
+  if (browser && !process.env.VERCEL && !process.env.BROWSERLESS_URL) {
     if (browser.isConnected()) {
       return browser
     }
