@@ -1,25 +1,27 @@
 import { NextResponse } from 'next/server';
-import { Client } from "@upstash/qstash";
+import { createClient } from '@supabase/supabase-js';
 import { processVigaTransaction } from '../../../lib/billing';
+import crypto from 'crypto';
 
-const qstash = new Client({ token: process.env.QSTASH_TOKEN! });
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
-export const runtime = 'nodejs'
-export const dynamic = 'force-dynamic'
-export const maxDuration = 300
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-// ✅ helper ES5-safe
 const normalizeUrl = (input: string): string => {
   try {
-    return new URL(input).toString()
+    return new URL(input).toString();
   } catch {
-    return new URL(`https://${input}`).toString()
+    return new URL(`https://${input}`).toString();
   }
-}
+};
 
 export async function POST(req: Request) {
   try {
-    const { url, suite_id, goal, userId } = await req.json()
+    const { url, suite_id, goal, userId } = await req.json();
 
     if (!url || !suite_id || !goal) {
       return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
@@ -29,52 +31,50 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
     }
 
+    // Process billing BEFORE creating job
     const billing = await processVigaTransaction(userId, 10, 'Strike Run');
     if (!billing.success) {
-      return NextResponse.json({ error: billing.error }, { status: 402 });
+      return NextResponse.json({
+        error: billing.error,
+        insufficient_funds: true
+      }, { status: 402 });
     }
 
-    const targetUrl = normalizeUrl(url)
+    const targetUrl = normalizeUrl(url);
 
-    // ✅ MODIFICACIÓN ROBUSTA: Smart URL detection
-    let baseUrl = process.env.NEXT_PUBLIC_APP_URL;
+    // Create job in database
+    const jobId = crypto.randomUUID();
+    const { error: jobError } = await supabase.from('jobs').insert({
+      id: jobId,
+      suite_id: suite_id,
+      user_id: userId,
+      job_type: 'strike',
+      status: 'pending',
+      url: targetUrl,
+      goal: goal,
+      created_at: new Date().toISOString()
+    });
 
-    const isVercel = !!process.env.VERCEL_URL;
-    const isNgrokConfig = baseUrl?.includes('ngrok') || baseUrl?.includes('localhost');
-
-    if (isVercel && isNgrokConfig) {
-      console.warn(`[VIGA-CONFIG] ⚠️ WARNING: NEXT_PUBLIC_APP_URL is set to '${baseUrl}' but running on Vercel. Falling back to https://${process.env.VERCEL_URL}`);
-      baseUrl = `https://${process.env.VERCEL_URL}`;
-    } else if (!baseUrl) {
-      baseUrl = isVercel ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
+    if (jobError) {
+      console.error('[STRIKE] Error creating job:', jobError);
+      return NextResponse.json({ error: 'Failed to create job' }, { status: 500 });
     }
 
-    // Ensure no trailing slash
-    baseUrl = baseUrl.replace(/\/$/, "");
-
-    console.log(`[VIGA-QSTASH] 🚀 Encolando STRIKE job.`);
-    console.log(`[VIGA-QSTASH] 📍 Destino Worker: ${baseUrl}/api/worker/strike`);
-    console.log(`[VIGA-QSTASH] 🎯 Goal: ${goal}`);
-
-    await qstash.publishJSON({
-      url: `${baseUrl}/api/worker/strike`,
-      body: { url: targetUrl, suite_id, goal },
-      headers: { "ngrok-skip-browser-warning": "true" }
-    })
+    console.log(`[STRIKE] ✅ Job created: ${jobId} for suite ${suite_id}`);
 
     return NextResponse.json({
       success: true,
       agent: 'strike',
       suite_id,
+      job_id: jobId,
       goal,
-      status: 'enqueued',
-      debug_worker_url: `${baseUrl}/api/worker/strike`
-    })
+      status: 'pending'
+    });
   } catch (err: any) {
-    console.error('[STRIKE ENQUEUE ERROR]:', err);
+    console.error('[STRIKE] Error:', err);
     return NextResponse.json(
       { error: err?.message || 'Internal error' },
       { status: 500 }
-    )
+    );
   }
 }

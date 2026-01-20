@@ -88,7 +88,7 @@ export default function MissionControlPage() {
 
     if (suite) {
       setActiveSuiteId(suite.id);
-      fetch(`/api/run-${missionMode}`, {
+      const response = await fetch(`/api/run-${missionMode}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -99,6 +99,28 @@ export default function MissionControlPage() {
           credentials: (credentials.username || credentials.password) ? credentials : null
         })
       });
+
+      const result = await response.json();
+
+      // Check for insufficient funds
+      if (!response.ok && result.insufficient_funds) {
+        setStatus('idle');
+        setSuiteStatus('idle');
+        setChaosOpen(false);
+        showNotify(result.error || 'Insufficient VIGAS to run this agent', 'error');
+        // Delete the suite since we didn't actually start
+        await supabase.from('test_suites').delete().eq('id', suite.id);
+        return;
+      }
+
+      if (!response.ok) {
+        setStatus('idle');
+        setSuiteStatus('idle');
+        setChaosOpen(false);
+        showNotify(result.error || 'Failed to start agent', 'error');
+        await supabase.from('test_suites').delete().eq('id', suite.id);
+        return;
+      }
     }
   };
 
@@ -178,8 +200,8 @@ export default function MissionControlPage() {
                 <button
                   key={m} onClick={() => setMissionMode(m)}
                   className={`px-5 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${missionMode === m
-                      ? (m === 'chaos' ? 'bg-orange-600 text-white shadow-lg shadow-orange-600/20' : 'bg-purple-600 text-white shadow-lg shadow-purple-600/20')
-                      : (isDark ? 'text-slate-500 hover:text-white bg-white/5' : 'text-slate-400 hover:text-slate-800 bg-slate-100')
+                    ? (m === 'chaos' ? 'bg-orange-600 text-white shadow-lg shadow-orange-600/20' : 'bg-purple-600 text-white shadow-lg shadow-purple-600/20')
+                    : (isDark ? 'text-slate-500 hover:text-white bg-white/5' : 'text-slate-400 hover:text-slate-800 bg-slate-100')
                     }`}
                 >
                   {m}

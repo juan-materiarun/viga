@@ -1,8 +1,15 @@
 import { NextResponse } from 'next/server';
-import { Client } from "@upstash/qstash";
+import { createClient } from '@supabase/supabase-js';
 import { processVigaTransaction } from '../../../lib/billing';
+import crypto from 'crypto';
 
-const qstash = new Client({ token: process.env.QSTASH_TOKEN });
+const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
     try {
@@ -12,8 +19,8 @@ export async function POST(req: Request) {
             return NextResponse.json({ success: false, error: 'URL and Steps required' }, { status: 400 });
         }
 
-        // BACKEND VALIDATION
-        const urlPattern = /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([/\w .-]*)*\/?$/;
+        // Backend validation
+        const urlPattern = /^(https?:\/\/)?([\ da-z.-]+)\.([a-z.]{2,6})([/\w .-]*)*\/?$/;
         if (!urlPattern.test(url)) {
             return NextResponse.json({ success: false, error: 'Invalid URL format' }, { status: 400 });
         }
@@ -22,22 +29,46 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
         }
 
-        const billing = await processVigaTransaction(userId, 5, 'Regression Run'); // Cheaper than Agents
+        // Process billing BEFORE creating job (cheaper than agents)
+        const billing = await processVigaTransaction(userId, 5, 'Regression Run');
         if (!billing.success) {
-            return NextResponse.json({ error: billing.error }, { status: 402 });
+            return NextResponse.json({
+                error: billing.error,
+                insufficient_funds: true
+            }, { status: 402 });
         }
 
-        console.log(`[Replay] Triggering Regression for: ${url} (${steps.length} steps)`);
+        console.log(`[REPLAY] Triggering Regression for: ${url} (${steps.length} steps)`);
 
-        // Publish to Worker
-        const result = await qstash.publishJSON({
-            url: `${process.env.NEXT_PUBLIC_APP_URL}/api/worker/viga`,
-            body: { url, steps, suite_id, credentials },
+        // Create job in database
+        const jobId = crypto.randomUUID();
+        const { error: jobError } = await supabase.from('jobs').insert({
+            id: jobId,
+            suite_id: suite_id,
+            user_id: userId,
+            job_type: 'replay',
+            status: 'pending',
+            url: url,
+            steps: steps,
+            credentials: credentials || null,
+            created_at: new Date().toISOString()
         });
 
-        return NextResponse.json({ success: true, message: 'Regression Queued', id: result.messageId });
+        if (jobError) {
+            console.error('[REPLAY] Error creating job:', jobError);
+            return NextResponse.json({ error: 'Failed to create job' }, { status: 500 });
+        }
+
+        console.log(`[REPLAY] ✅ Job created: ${jobId} for suite ${suite_id}`);
+
+        return NextResponse.json({
+            success: true,
+            message: 'Regression Queued',
+            job_id: jobId,
+            suite_id: suite_id
+        });
     } catch (error: any) {
-        console.error('API Error:', error);
+        console.error('[REPLAY] Error:', error);
         return NextResponse.json({ success: false, error: error.message }, { status: 500 });
     }
 }
