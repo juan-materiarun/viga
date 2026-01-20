@@ -6,13 +6,29 @@ export async function getBrowser(): Promise<Browser> {
   if (browser) return browser
 
   const isVercel = !!process.env.VERCEL
+  const browserlessUrl = process.env.BROWSERLESS_URL
   const browserlessToken = process.env.BROWSERLESS_TOKEN
 
-  if (isVercel && browserlessToken) {
-    console.log('🌐 Using Browserless (Vercel)')
-    browser = await chromium.connectOverCDP(
-      `wss://chrome.browserless.io?token=${browserlessToken}`
-    )
+  if (isVercel || browserlessUrl || browserlessToken) {
+    console.log('🌐 Connecting to Remote Browser (Browserless)...')
+
+    let endpoint = browserlessUrl
+    if (!endpoint && browserlessToken) {
+      endpoint = `wss://chrome.browserless.io?token=${browserlessToken}`
+    }
+
+    if (!endpoint) {
+      throw new Error('❌ Missing Browserless Configuration: Set BROWSERLESS_URL or BROWSERLESS_TOKEN')
+    }
+
+    try {
+      console.log(`🔌 Connecting to: ${endpoint.replace(/token=([^&]+)/, 'token=***')}`)
+      browser = await chromium.connectOverCDP(endpoint)
+      console.log('✅ Connected to Browserless successfully')
+    } catch (e: any) {
+      console.error('❌ Failed to connect to Browserless:', e.message)
+      throw e
+    }
   } else {
     console.log('🖥️ Using LOCAL Chromium')
     browser = await chromium.launch({
