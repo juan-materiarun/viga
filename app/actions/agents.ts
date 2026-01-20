@@ -261,13 +261,40 @@ CONTEXTO QUE RECIBIRÁS:
 
 TU PROCESO DE DECISIÓN:
 1. ANALIZA el propósito de la página actual (¿Landing?, ¿Login?, ¿Dashboard?).
-2. FASE 1 - EXPLORACIÓN LOCAL: Debes interactuar con TODOS los elementos relevantes de la vista actual (botones, toggles, inputs) ANTES de navegar a otra página.
-3. FASE 2 - NAVEGACIÓN PROFUNDA: Solo si la vista actual está "agotada" (todos los elementos visitados), busca links de navegación o login.
+2. Para CADA elemento que consideres, identifica:
+   - ¿QUÉ ES? (botón de login, toggle de tema, input de búsqueda, link de navegación, etc.)
+   - ¿QUÉ FUNCIÓN tiene según su texto/label/contexto?
+   - ¿POR QUÉ es importante probarlo en el contexto actual?
+3. FASE 1 - EXPLORACIÓN LOCAL: Debes interactuar con TODOS los elementos relevantes de la vista actual (botones, toggles, inputs) ANTES de navegar a otra página.
+4. FASE 2 - NAVEGACIÓN PROFUNDA: Solo si la vista actual está "agotada" (todos los elementos visitados), busca links de navegación o login.
 
-EJEMPLOS DE RAZONAMIENTO:
-✅ BIEN: "Estoy en la Landing. Hay botones de 'Features' y 'Pricing' que no he probado. Los clickearé antes de ir a 'Login'."
-✅ BIEN: "Estoy en un formulario. Llenaré todos los campos antes de enviar."
-❌ MAL: "Veo un botón Login, iré directo ahí (ignorando el resto de la landing)."
+TU ANÁLISIS NEURAL ("thought") DEBE INCLUIR:
+✅ FORMATO CORRECTO:
+"Identifico el [TIPO DE ELEMENTO] '[NOMBRE/LABEL]' ubicado en [UBICACIÓN]. Su función aparente es [PROPÓSITO INFERIDO]. Lo probaré porque [RAZÓN ESPECÍFICA SEGÚN CONTEXTO]."
+
+❌ RESPUESTA GENÉRICA INACEPTABLE:
+"Debo probar esto para ver su funcionalidad"
+"Voy a clickear este botón"
+"Necesito ver qué hace"
+
+✅ EJEMPLOS DE BUEN RAZONAMIENTO:
+
+Ejemplo 1:
+{
+  "title": "PROBAR TOGGLE DE TEMA",
+  "thought": "Identifico el botón 'Dark Mode' en la esquina superior derecha del header. Es un control de tema que debería alternar entre paletas claras y oscuras. Lo probaré para validar la respuesta visual del sistema a cambios de preferencias de UI, un caso crítico de accesibilidad.",
+  "index": 3,
+  "action": "click"
+}
+
+Ejemplo 2:
+{
+  "title": "COMPLETAR CAMPO EMAIL",
+  "thought": "Detecto el input con placeholder 'Enter your email' en el formulario de registro. Es un campo obligatorio para crear cuenta. Lo llenaré con un email de prueba para validar la validación de formato y continuar el flujo de onboarding.",
+  "index": 1,
+  "action": "type",
+  "payload": "test@qa.com"
+}
 
 REGLAS CRÍTICAS:
 1. JAMÁS selecciones un elemento con "visited": true.
@@ -278,7 +305,7 @@ REGLAS CRÍTICAS:
 Responde JSON:
 {
   "title": "ACCIÓN CLARA (Ej: PROBAR LOGIN)",
-  "thought": "Razonamiento contextual detallado sobre POR QUÉ esta acción es importante según el contenido de la página",
+  "thought": "[ANÁLISIS CONTEXTUAL ESPECÍFICO SIGUIENDO EL FORMATO ARRIBA]",
   "index": number,
   "action": "click" | "type" | "finish",
   "payload": "string si action=type"
@@ -292,17 +319,30 @@ export async function runChaosAgent(url: string, suiteId: string, credentials?: 
 
   await vigaLog(suiteId, '🌪️ Chaos Monkey Liberado', 'info')
 
+  // KEEPALIVE: Ping Browserless every 15s to prevent timeout
+  const keepalive = setInterval(() => {
+    if (!page.isClosed()) {
+      page.evaluate(() => true).catch(() => { })
+    }
+  }, 15000)
+
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded' })
     try { await page.waitForLoadState('networkidle', { timeout: 8000 }) } catch (e) { }
 
     let actions = 0
-    const MAX_ACTIONS = 20
+    const MAX_ACTIONS = 10 // Reduced from 20 for faster execution
     const visitedStates = new Set<string>()
     const visitedFingerprints = new Set<string>() // Track interacted elements
     const history: string[] = []
 
     while (actions < MAX_ACTIONS) {
+      // DEFENSIVE: Check if page is still alive
+      if (page.isClosed()) {
+        await vigaLog(suiteId, '⚠️ Página cerrada prematuramente. Finalizando.', 'warning')
+        break
+      }
+
       await waitForStableUI(page)
 
       const elements = await smartWaitForElements(page, suiteId)
@@ -421,7 +461,7 @@ export async function runChaosAgent(url: string, suiteId: string, credentials?: 
           console.log(`[CHAOS] ✅ Action executed. Sleeping...`)
 
           actions++
-          await sleep(3000)
+          await sleep(1500) // Reduced from 3000ms for faster execution
 
           // USE TITLE + THOUGHT properly + SAVE SELECTOR for regression
           console.log(`[CHAOS] 📝 Recording step...`)
@@ -437,7 +477,7 @@ export async function runChaosAgent(url: string, suiteId: string, credentials?: 
           await recordStep(suiteId, page, `ERROR: ${decision.title}`, 'failed', err.message)
         }
       }
-      await sleep(1000)
+      await sleep(500) // Reduced from 1000ms
     }
     await vigaLog(suiteId, '🏁 Chaos Session Finalizada', 'success')
     await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId)
@@ -454,7 +494,7 @@ export async function runChaosAgent(url: string, suiteId: string, credentials?: 
     await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
     throw e
   } finally {
-    await page.close()
+    clearInterval(keepalive) // Stop keepalive heartbeat`r`n    await page.close()
     if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
       await browser.close().catch(() => { })
     }
@@ -555,7 +595,7 @@ export async function runStrikeAgent(url: string, suiteId: string, goal: string)
     await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
     throw e
   } finally {
-    await page.close()
+    clearInterval(keepalive) // Stop keepalive heartbeat`r`n    await page.close()
     if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
       await browser.close().catch(() => { })
     }
@@ -667,7 +707,7 @@ export async function runReplayAgent(url: string, suiteId: string, recordedSteps
     await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
     throw e
   } finally {
-    await page.close()
+    clearInterval(keepalive) // Stop keepalive heartbeat`r`n    await page.close()
     if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
       await browser.close().catch(() => { })
     }
