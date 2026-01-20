@@ -494,7 +494,8 @@ export async function runChaosAgent(url: string, suiteId: string, credentials?: 
     await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
     throw e
   } finally {
-    clearInterval(keepalive) // Stop keepalive heartbeat`r`n    await page.close()
+    clearInterval(keepalive) // Stop keepalive heartbeat
+    await page.close()
     if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
       await browser.close().catch(() => { })
     }
@@ -595,7 +596,7 @@ export async function runStrikeAgent(url: string, suiteId: string, goal: string)
     await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
     throw e
   } finally {
-    clearInterval(keepalive) // Stop keepalive heartbeat`r`n    await page.close()
+    await page.close()
     if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
       await browser.close().catch(() => { })
     }
