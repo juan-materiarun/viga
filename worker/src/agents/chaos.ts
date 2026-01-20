@@ -340,8 +340,8 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
             const unvisitedCount = mappedElements.filter(e => !e.visited).length;
 
-            const pageContent = await page.textContent('body').catch(() => '');
-            const headings = await page.$$eval('h1, h2, h3', els => els.map(el => el.textContent?.trim()).filter(Boolean)).catch(() => []);
+            const pageContent = await page.textContent('body').then(t => t || '').catch(() => '');
+            const headings = await page.$$eval('h1, h2, h3', els => els.map(el => el.textContent?.trim() || '').filter(Boolean)).catch(() => [] as string[]);
             const formCount = await page.$$eval('form', forms => forms.length).catch(() => 0);
 
             const context = JSON.stringify({

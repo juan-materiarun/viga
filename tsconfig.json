@@ -26,9 +26,13 @@
     "next-env.d.ts",
     ".next/types/**/*.ts",
     "**/*.ts",
-    "**/*.tsx"
-, "app/actions/agents.js", "app/api/run-viga/run-chaos/route.js", "app/components/Sidebar.jsx"  ],
+    "**/*.tsx",
+    "app/actions/agents.js",
+    "app/api/run-viga/run-chaos/route.js",
+    "app/components/Sidebar.jsx"
+  ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "worker"
   ]
 }

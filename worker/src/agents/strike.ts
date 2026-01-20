@@ -224,7 +224,7 @@ export async function runStrikeAgent(jobId: string, url: string, suiteId: string
 
         let steps = 0;
         const MAX_STEPS = 20;
-        let lastAction = '';
+        let lastAction = 'Started Strike Agent';
 
         while (steps < MAX_STEPS) {
             await waitForStableUI(page);
@@ -256,11 +256,11 @@ export async function runStrikeAgent(jobId: string, url: string, suiteId: string
 
             if (plan.status === 'completed' || plan.action === 'finish') {
                 await vigaLog(suiteId, '✅ Objetivo Cumplido', 'success');
-                await recordStep(suiteId, page, 'OBJETIVO CUMPLIDO', 'success', plan.thought);
+                await recordStep(suiteId, page, 'OBJETIVO CUMPLIDO', 'success', plan.thought || 'Goal achieved');
                 break;
             }
             if (plan.status === 'failed') {
-                await recordStep(suiteId, page, 'MISIÓN FALLIDA', 'failed', plan.thought);
+                await recordStep(suiteId, page, 'MISIÓN FALLIDA', 'failed', plan.thought || 'Agent failed to achieve goal');
                 break;
             }
 
