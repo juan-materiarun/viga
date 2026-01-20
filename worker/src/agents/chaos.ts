@@ -282,7 +282,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
         try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (e) { }
 
         let actions = 0;
-        const MAX_ACTIONS = 10;
+        const MAX_ACTIONS = 50;
         const visitedStates = new Set<string>();
         const visitedFingerprints = new Set<string>();
         const history: string[] = [];

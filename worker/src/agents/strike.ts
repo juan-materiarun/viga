@@ -223,7 +223,7 @@ export async function runStrikeAgent(jobId: string, url: string, suiteId: string
         try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (e) { }
 
         let steps = 0;
-        const MAX_STEPS = 20;
+        const MAX_STEPS = 50;
         let lastAction = 'Started Strike Agent';
 
         while (steps < MAX_STEPS) {

@@ -33,10 +33,12 @@ export function createLLMContext(): LLMContext {
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 function getClient(ctx: LLMContext) {
-    const key = ctx.keys[ctx.pointer % ctx.keys.length];
+    const totalKeys = ctx.keys.length;
+    const currentSlot = ctx.pointer % totalKeys;
+    const key = ctx.keys[currentSlot];
     ctx.pointer++;
 
-    console.log(`[VIGA-LLM] Usando key slot ${ctx.pointer}/${ctx.keys.length}`);
+    console.log(`[VIGA-LLM] Usando key slot ${currentSlot + 1}/${totalKeys}`);
     return new Groq({ apiKey: key });
 }
 
@@ -46,11 +48,13 @@ export async function callGroqJSON(
     ctx: LLMContext,
     system: string,
     user: string,
-    retries = 3
+    retries = 5 // Increased default retries
 ): Promise<any> {
 
     if (Date.now() < ctx.cooldownUntil) {
-        await sleep(ctx.cooldownUntil - Date.now());
+        const waitTime = ctx.cooldownUntil - Date.now();
+        console.log(`[VIGA-LLM] Cooldown activo. Esperando ${waitTime}ms...`);
+        await sleep(waitTime);
     }
 
     try {
@@ -80,15 +84,26 @@ DIRECTIVAS DE QA SENIOR:
 
     } catch (err: any) {
         const msg = err?.message || '';
+        const isRateLimit = msg.includes('rate') || msg.includes('429');
 
-        if (msg.includes('rate') || msg.includes('429')) {
-            console.warn('[GROQ] Rate limit detectado, cooldown 3s');
-            ctx.cooldownUntil = Date.now() + 3000;
+        if (isRateLimit) {
+            // Exponentially increase cooldown on repeated failures
+            const baseWait = 3000;
+            const multiplier = (6 - retries); // 1st try = 3s, 2nd = 6s, etc.
+            const waitTime = baseWait * multiplier;
+
+            console.warn(`[GROQ] Rate limit detectado. Incrementando cooldown a ${waitTime}ms (Intentos restantes: ${retries})`);
+            ctx.cooldownUntil = Date.now() + waitTime;
+
+            // Wait immediately before retrying
+            await sleep(waitTime);
         }
 
-        if (retries <= 0) return null;
+        if (retries <= 0) {
+            console.error('[VIGA-LLM] ❌ Se agotaron los reintentos. La IA no responde.');
+            return null;
+        }
 
-        await sleep(1500);
         return callGroqJSON(ctx, system, user, retries - 1);
     }
 }
