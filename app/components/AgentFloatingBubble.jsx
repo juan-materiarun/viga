@@ -7,28 +7,25 @@ import { Search, Zap, Crosshair, AlertCircle, CheckCircle2, Maximize2 } from 'lu
 export default function AgentFloatingBubble({ mode, total, success, alerts, onExpand, isDark }) {
     const getAgentColor = () => {
         switch (mode) {
-            case 'scout': return 'text-blue-500';
             case 'chaos': return 'text-orange-500';
             case 'strike': return 'text-purple-500';
-            default: return 'text-blue-500';
+            default: return 'text-orange-500';
         }
     };
 
     const getAgentBg = () => {
         switch (mode) {
-            case 'scout': return 'bg-blue-500/10 border-blue-500/20';
             case 'chaos': return 'bg-orange-500/10 border-orange-500/20';
             case 'strike': return 'bg-purple-500/10 border-purple-500/20';
-            default: return 'bg-blue-500/10 border-blue-500/20';
+            default: return 'bg-orange-500/10 border-orange-500/20';
         }
     };
 
     const getAgentIcon = () => {
         switch (mode) {
-            case 'scout': return <Search size={16} />;
             case 'chaos': return <Zap size={16} />;
             case 'strike': return <Crosshair size={16} />;
-            default: return <Search size={16} />;
+            default: return <Zap size={16} />;
         }
     };
 
