@@ -249,63 +249,6 @@ async function smartWaitForElements(page: any, suiteId: string): Promise<UIEleme
   return []
 }
 
-/* ───────── SCOUT AGENT ───────── */
-
-export async function runScoutAgent(url: string, suiteId: string) {
-  const browser = await getBrowser()
-  const page = await browser.newPage()
-
-  await vigaLog(suiteId, '🔍 Scout iniciado', 'info')
-
-  try {
-    await page.goto(url, { waitUntil: 'domcontentloaded' })
-    try { await page.waitForLoadState('networkidle', { timeout: 10000 }) } catch (e) { }
-    await waitForStableUI(page)
-    await injectScripts(page)
-
-    // USE SMART WAIT (Now Scout is also resilient to slow apps)
-    const elements = await smartWaitForElements(page, suiteId)
-
-    await vigaLog(suiteId, `👀 Encontrados ${elements.length} elementos interactivos`, 'info')
-
-    let inserted = 0
-    const batchSize = 10
-
-    for (let i = 0; i < elements.length; i += batchSize) {
-      const chunk = elements.slice(i, i + batchSize)
-
-      for (const el of chunk) {
-        const { error } = await supabase.from('discovered_elements').upsert({
-          suite_id: suiteId,
-          selector: el.selector,
-          tag_name: el.tag,
-          text: el.text || el.hint,
-          url: url,
-          status: 'active',
-          priority: 1,
-          identity_data: {
-            hint: el.hint,
-            attributes: el.attributes,
-            xpath: el.xpath
-          }
-        }, { onConflict: 'suite_id, selector' })
-
-        if (!error) inserted++
-      }
-    }
-
-    await vigaLog(suiteId, `📦 Scout DB: ${inserted} elementos registrados`, 'success')
-    await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId)
-  } catch (e: any) {
-    console.error(e)
-    await vigaLog(suiteId, `❌ Scout Error: ${e.message}`, 'error')
-    await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId)
-    throw e
-  } finally {
-    await page.close()
-  }
-}
-
 /* ───────── CHAOS AGENT ───────── */
 
 const CHAOS_SYSTEM = `
@@ -514,6 +457,11 @@ export async function runChaosAgent(url: string, suiteId: string, credentials?: 
     await page.close()
   }
 }
+    if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
+      await browser.close().catch(() => { })
+    }
+  }
+}
 
 /* ───────── STRIKE AGENT ───────── */
 
@@ -610,6 +558,11 @@ export async function runStrikeAgent(url: string, suiteId: string, goal: string)
     throw e
   } finally {
     await page.close()
+  }
+}
+    if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
+      await browser.close().catch(() => { })
+    }
   }
 }
 
@@ -719,5 +672,10 @@ export async function runReplayAgent(url: string, suiteId: string, recordedSteps
     throw e
   } finally {
     await page.close()
+  }
+}
+    if (process.env.VERCEL || process.env.BROWSERLESS_URL) {
+      await browser.close().catch(() => { })
+    }
   }
 }
