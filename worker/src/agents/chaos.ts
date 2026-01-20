@@ -17,8 +17,11 @@ async function vigaLog(
         suite_id: suiteId,
         message,
         level
+    }).then(({ error }) => {
+        if (error) console.error('[VIGA_LOG] Failed to save log:', error);
     });
 }
+
 
 async function recordStep(
     suiteId: string,
@@ -53,10 +56,12 @@ async function recordStep(
         if (error.code === '23505') {
             console.log(`[DB] ⚠️ Duplicate step ID avoided (idempotency check passed).`);
         } else {
-            console.error('Error saving step:', error);
+            console.error('[RECORD_STEP] ❌ Error saving step:', error);
+            console.error('[RECORD_STEP] Payload:', { suite_id: suiteId, title, status });
         }
     }
 }
+
 
 async function waitForStableUI(page: any, timeout = 15000) {
     const start = Date.now();
@@ -264,6 +269,25 @@ Responde JSON:
 }
 `;
 
+const WARMUP_ACTIONS = 5;
+
+function classifyElementDeterministically(el: UIElement): number {
+    const hint = (el.hint || '').toLowerCase();
+    const tag = (el.tag || '').toLowerCase();
+
+    // High priority: Inputs and obvious buttons
+    if (tag === 'input') return 10;
+    if (tag === 'button' && (hint.includes('login') || hint.includes('sign') || hint.includes('ingresar') || hint.includes('entrar'))) return 12;
+    if (tag === 'button') return 9;
+    if (hint.includes('submit') || hint.includes('send') || hint.includes('enviar') || hint.includes('search') || hint.includes('buscar')) return 11;
+
+    // Medium: Navigation
+    if (tag === 'a' && hint.length > 0) return 5;
+
+    // Low
+    return 1;
+}
+
 export async function runChaosAgent(jobId: string, url: string, suiteId: string, credentials?: any) {
     const browser = await getBrowser();
     const page = await browser.newPage();
@@ -323,7 +347,13 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     }
                 }));
 
-                await supabase.from('discovered_elements').upsert(upsertBatch, { onConflict: 'suite_id, selector' });
+                const { error: upsertError } = await supabase.from('discovered_elements').upsert(upsertBatch, { onConflict: 'suite_id, selector' });
+
+                if (upsertError) {
+                    await vigaLog(suiteId, `❌ ERROR guardando discovered_elements: ${upsertError.message}`, 'error');
+                    console.error('[CHAOS] Failed to save discovered_elements:', upsertError);
+                }
+
             }
 
             const mappedElements = elements.map(e => {
@@ -364,6 +394,68 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 current_url: currentUrl,
                 elements_found: elements.length
             });
+
+            // --- WARMUP PHASE (Deterministic) ---
+            if (actions < WARMUP_ACTIONS) {
+                await vigaLog(suiteId, `🏃 WARMUP MODE (${actions + 1}/${WARMUP_ACTIONS})`, 'info');
+
+                const scoredElements = mappedElements
+                    .filter(e => !e.visited)
+                    .map(e => {
+                        const original = elements.find(el => el.i === e.i);
+                        return { ...e, score: original ? classifyElementDeterministically(original) : 0 };
+                    })
+                    .sort((a, b) => b.score - a.score);
+
+                // Solo actuamos si hay algo con score > 1 (filtramos basura)
+                if (scoredElements.length > 0 && scoredElements[0].score > 1) {
+                    const topCandidate = scoredElements[0];
+                    const target = elements.find(el => el.i === topCandidate.i)!;
+
+                    const actionType = target.tag === 'input' ? 'type' : 'click';
+                    const actionDesc = `[HEURÍSTICO] ${actionType.toUpperCase()} en ${target.hint}`;
+
+                    await vigaLog(suiteId, `👉 ${actionDesc} (Score: ${topCandidate.score})`, 'info');
+
+                    // Execute without LLM logic
+                    const baseUrl = currentUrl.split('#')[0].split('?')[0];
+                    const fingerprint = `${baseUrl}::${target.selector}`;
+                    visitedFingerprints.add(fingerprint);
+
+                    try {
+                        if (actionType === 'type') {
+                            let payload = 'test@qa.com';
+                            if (target.selector.includes('password') || target.selector.includes('pass')) {
+                                payload = credentials?.password || 'Password123!';
+                            } else if (credentials?.username && (target.selector.includes('user') || target.selector.includes('email'))) {
+                                payload = credentials.username || 'test_user';
+                            }
+                            await page.fill(target.selector, payload);
+                        } else {
+                            try { await page.click(target.selector, { timeout: 5000 }); }
+                            catch (e) { if (target.xpath) await page.click(`xpath=${target.xpath}`, { timeout: 5000 }); else throw e; }
+                        }
+
+                        actions++;
+                        await sleep(1000);
+
+                        await recordStep(suiteId, page, actionDesc, 'success', `Acción determinística (Score ${topCandidate.score})`, {
+                            selector: target.selector,
+                            xpath: target.xpath,
+                            actionType: actionType as any
+                        });
+
+                        continue; // Skip LLM call
+                    } catch (err: any) {
+                        await vigaLog(suiteId, `⚠️ Fallo heurístico: ${err.message}`, 'warning');
+                        // Fallback to LLM naturally if warmup action fails
+                    }
+                } else {
+                    // No high-confidence warmup targets found
+                    await vigaLog(suiteId, `ℹ️ Warmup skippeado: sin candidatos claros`, 'info');
+                }
+            }
+
 
             const decision = await callGroqJSON(llmCtx, CHAOS_SYSTEM, context);
 
@@ -429,6 +521,16 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 }
             }
             await sleep(500);
+        }
+        if (actions > 0) {
+            const { count, error: countErr } = await supabase
+                .from('discovered_elements')
+                .select('*', { count: 'exact', head: true })
+                .eq('suite_id', suiteId);
+
+            if (countErr) await vigaLog(suiteId, `❌ Error verificando memoria: ${countErr.message}`, 'error');
+            else if ((count || 0) === 0) await vigaLog(suiteId, `🚨 ALERTA: Memoria vacía tras ${actions} acciones! Revisar logs.`, 'error');
+            else await vigaLog(suiteId, `🧠 Memoria validada: ${count} elementos persistidos.`, 'success');
         }
         await vigaLog(suiteId, '🏁 Chaos Session Finalizada', 'success');
         await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
