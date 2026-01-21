@@ -184,9 +184,7 @@ async function getActiveElements(page: any): Promise<UIElement[]> {
                 const cleanText = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 100);
                 const hint = [labelText, placeholder, aria, name, role, cleanText].filter(Boolean).join(' | ');
 
-                // Detect if this is a branch element (tab, toggle, radio)
-                const isBranchElement = role === 'tab' || role === 'radio' || type === 'radio' || type === 'checkbox' ||
-                    (role === 'button' && (aria.toLowerCase().includes('tab') || cleanText.toLowerCase().match(/tab|toggle|switch/)));
+                // REMOVED: Static branch detection (now done post-action based on structural change)
 
                 return {
                     i,
@@ -195,8 +193,7 @@ async function getActiveElements(page: any): Promise<UIElement[]> {
                     hint: hint,
                     selector,
                     xpath,
-                    attributes: { type, name, id: el.id, role, ariaSelected, checked },
-                    isBranchElement // NEW: flag for branch detection
+                    attributes: { type, name, id: el.id, role, ariaSelected, checked }
                 };
             })
             .filter(Boolean) as UIElement[];
@@ -289,8 +286,7 @@ REGLAS CRÍTICAS:
 2. Si TODOS los elementos tienen "visited": true -> Action: "finish".
 3. PRIORIDAD MÁXIMA: No saltes pasos. Si hay botones funcionales en la pantalla actual, clickéalos primero.
 4. Si detectas un cambio de tab/pestaña, asume que es una vista nueva y resetea tu curiosidad exploratoria.
-5. **BRANCH PRIORITIZATION**: Si recibes "should_prioritize_branches": true en stats, DEBES priorizar elementos que sean tabs, toggles, radios o switches sin interactuar. Estos revelan flujos alternativos críticos que aún no has explorado.
-6. **FLOW COMPLETION**: Si "blocked_flows" > 0 en stats, significa que hay Botones/Acciones que visitaste pero sin completar sus inputs relacionados (Flow Vacio vs Flow Lleno). DEBES buscar esos inputs y llenarlos para habilitar la prueba real del flujo.
+5. **FLOW COMPLETION**: Si "blocked_flows" > 0 en stats, significa que hay Botones/Acciones que visitaste pero sin completar sus inputs relacionados (Flow Vacio vs Flow Lleno). DEBES buscar esos inputs y llenarlos para habilitar la prueba real del flujo.
 
 Responde JSON:
 {
@@ -302,23 +298,39 @@ Responde JSON:
 }
 `;
 
-const WARMUP_ACTIONS = 5;
+const WARMUP_ACTIONS = 1; // Reduced from 5 to prevent spam
 
 function classifyElementDeterministically(el: UIElement): number {
     const hint = (el.hint || '').toLowerCase();
     const tag = (el.tag || '').toLowerCase();
+    const type = el.attributes?.type || '';
+    const role = el.attributes?.role || '';
 
-    // High priority: Inputs and obvious buttons
-    if (tag === 'input') return 10;
-    if (tag === 'button' && (hint.includes('login') || hint.includes('sign') || hint.includes('ingresar') || hint.includes('entrar'))) return 12;
-    if (tag === 'button') return 9;
-    if (hint.includes('submit') || hint.includes('send') || hint.includes('enviar') || hint.includes('search') || hint.includes('buscar')) return 11;
+    // EXCLUDE toggles/switches/checkboxes from warmup
+    if (type === 'checkbox' || role === 'switch' || hint.match(/toggle|switch|theme|idioma|language|dark|light/)) return 0;
 
-    // Medium: Navigation
-    if (tag === 'a' && hint.length > 0) return 5;
+    // EXCLUDE main CTAs from warmup
+    if (tag === 'button' && hint.match(/submit|login|sign|start|crear|enviar/)) return 0;
+
+    // High priority: Simple inputs only
+    if (tag === 'input' && type !== 'checkbox' && type !== 'radio') return 10;
+
+    // Medium: Safe navigation
+    if (tag === 'a' && hint.length > 0 && !hint.match(/logout|salir|delete|eliminar/)) return 5;
 
     // Low
     return 1;
+}
+
+// NEW: Detect if action is reversible (toggle/switch)
+function isReversibleAction(el: UIElement): boolean {
+    const hint = (el.hint || '').toLowerCase();
+    const type = el.attributes?.type || '';
+    const role = el.attributes?.role || '';
+
+    return type === 'checkbox' ||
+        role === 'switch' ||
+        hint.match(/toggle|switch|theme|idioma|language|dark|light/) !== null;
 }
 
 export async function runChaosAgent(jobId: string, url: string, suiteId: string, credentials?: any) {
@@ -347,9 +359,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
         const visitedStates = new Set<string>();
         const visitedFingerprints = new Set<string>();
         const interactedInputs = new Set<string>(); // Track which inputs were filled
-        const interactedBranches = new Set<string>(); // Track which branches (tabs/toggles) were activated
-        let actionsSinceLastBranchSwitch = 0; // Counter for drift detection
-        const BRANCH_DRIFT_THRESHOLD = 8; // Max actions before forcing branch exploration
+        const actionHistory = new Map<string, number>(); // Anti-loop: fingerprint -> execution count
         const history: string[] = [];
 
         while (actions < MAX_ACTIONS) {
@@ -443,20 +453,6 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
             const unvisitedCount = mappedElements.filter(e => !e.visited).length;
 
-            // BRANCH DRIFT DETECTION
-            const branchElements = elements.filter(e => (e as any).isBranchElement);
-            const uninteractedBranches = branchElements.filter(e => {
-                const baseUrl = currentUrl.split('#')[0].split('?')[0];
-                const branchKey = `${baseUrl}::${e.selector}`;
-                return !interactedBranches.has(branchKey);
-            });
-
-            const shouldPrioritizeBranches = actionsSinceLastBranchSwitch >= BRANCH_DRIFT_THRESHOLD && uninteractedBranches.length > 0;
-
-            if (shouldPrioritizeBranches) {
-                await vigaLog(suiteId, `🔀 Branch drift detected (${actionsSinceLastBranchSwitch} actions). Priorizando ${uninteractedBranches.length} branches sin explorar.`, 'info');
-            }
-
             // FLOW COMPLETION GUARD:
             // Detect Actionables that have nearby inputs which are NOT fully interacted.
             const blockedFlows = mappedElements.filter(e => {
@@ -500,9 +496,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 stats: {
                     unvisited_elements: unvisitedCount,
                     blocked_flows: blockedFlows.length,
-                    total_elements: mappedElements.length,
-                    uninteracted_branches: uninteractedBranches.length,
-                    should_prioritize_branches: shouldPrioritizeBranches
+                    total_elements: mappedElements.length
                 },
                 credentials_vault: credentials ? "AVAILABLE (Use these for login forms if needed)" : "NONE",
                 available_credentials: credentials
@@ -599,7 +593,18 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                 history.push(`${decision.title}: ${decision.thought}`);
 
+                // ANTI-LOOP: Check if this is a reversible action already executed
+                const isReversible = isReversibleAction(target);
+                const executionCount = actionHistory.get(fingerprint) || 0;
+
+                if (isReversible && executionCount >= 1) {
+                    await vigaLog(suiteId, `⚠️ Toggle/Switch ya ejecutado (${executionCount}x). Skipping para evitar loop.`, 'warning');
+                    visitedFingerprints.add(fingerprint);
+                    continue; // Skip execution, mark as visited
+                }
+
                 visitedFingerprints.add(fingerprint);
+                actionHistory.set(fingerprint, executionCount + 1);
                 await vigaLog(suiteId, `🔖 Marcado como visitado: ${fingerprint.slice(0, 80)}...`, 'info');
 
                 try {
@@ -618,15 +623,6 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                         interactedInputs.add(`${baseUrl}::${target.selector}`);
                     } else {
                         console.log(`[CHAOS] 🖱️ Clicking...`);
-
-                        if ((target as any).isBranchElement) {
-                            const branchKey = `${baseUrl}::${target.selector}`;
-                            interactedBranches.add(branchKey);
-                            actionsSinceLastBranchSwitch = 0;
-                            await vigaLog(suiteId, `🔀 Branch activado: ${target.hint.slice(0, 50)}`, 'info');
-                        } else {
-                            actionsSinceLastBranchSwitch++;
-                        }
                         try { await page.click(target.selector, { timeout: 8000 }); }
                         catch (e) {
                             console.log(`[CHAOS] ⚠️ Standard click failed, trying XPath...`);

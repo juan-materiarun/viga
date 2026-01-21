@@ -1,180 +1,116 @@
 'use client';
-import React, { useRef, useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Check, X, Circle, GitBranch, Terminal, ArrowDownRight, ChevronRight, ChevronDown } from 'lucide-react';
+import React, { useRef, useEffect } from 'react';
+import { motion } from 'framer-motion';
+import { Check, X, Circle, GitBranch } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
-
-const StepNode = ({ step, index, childrenIds, allSteps, depth = 0, onSelect, selectedId, isDark, isLast }) => {
-    const isSelected = selectedId === step.id;
-    const isBranchSwitch = step.title?.toLowerCase().includes('branch') || step.expected_result?.toLowerCase().includes('branch');
-    const isSuccess = step.status === 'success';
-    const isFailed = step.status === 'failed';
-
-    // Resolve children
-    const children = childrenIds.map(id => allSteps.find(s => s.id === id)).filter(Boolean);
-    const hasChildren = children.length > 0;
-
-    return (
-        <div className="relative flex flex-col">
-            {/* Node Row */}
-            <div className="flex items-start group relative">
-
-                {/* Vertical Line from parent (if not root) */}
-                {depth > 0 && (
-                    <div className={`absolute left-[-20px] top-0 w-[20px] h-[24px] rounded-bl-xl border-b -z-10 ${isDark ? 'border-white/20' : 'border-slate-300'}`}
-                        style={{ borderLeftWidth: '2px', borderLeftColor: isDark ? 'rgba(255,255,255,0.1)' : '#cbd5e1' }}
-                    />
-                )}
-
-                {/* Icon / Marker */}
-                <motion.div
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    onClick={(e) => { e.stopPropagation(); onSelect(step); }}
-                    className={`
-               w-8 h-8 rounded-full border-2 flex items-center justify-center shrink-0 z-20 cursor-pointer transition-all
-               ${isSelected
-                            ? 'border-blue-500 bg-blue-500 text-white shadow-[0_0_15px_rgba(59,130,246,0.6)] scale-110'
-                            : isSuccess
-                                ? `border-emerald-500 ${isDark ? 'bg-black' : 'bg-white'} text-emerald-500`
-                                : isFailed
-                                    ? `border-red-500 ${isDark ? 'bg-black' : 'bg-white'} text-red-500`
-                                    : `${isDark ? 'border-slate-700 bg-slate-900' : 'border-slate-300 bg-white'} text-slate-500`
-                        }
-            `}
-                >
-                    {isSuccess ? <Check size={14} strokeWidth={3} /> :
-                        isFailed ? <X size={14} strokeWidth={3} /> :
-                            isBranchSwitch ? <GitBranch size={14} /> :
-                                <Circle size={10} fill="currentColor" opacity={0.5} />}
-                </motion.div>
-
-                {/* Content Card */}
-                <motion.div
-                    layoutId={`card-${step.id}`}
-                    onClick={() => onSelect(step)}
-                    className={`
-              ml-4 mb-6 flex-1 p-3 rounded-xl border cursor-pointer min-w-[200px] transition-all relative
-              ${isSelected ? 'border-blue-500 bg-blue-500/10' : isDark ? 'border-white/10 bg-white/5 hover:bg-white/10' : 'border-slate-200 bg-white hover:bg-slate-50'}
-            `}
-                >
-                    <div className="flex items-center justify-between gap-2">
-                        <span className={`text-[9px] font-black uppercase tracking-wider ${isFailed ? 'text-red-500' : 'opacity-50'}`}>Step {step.tempIndex + 1}</span>
-                        <span className="text-[8px] font-mono opacity-30">{new Date(step.created_at).toLocaleTimeString().slice(0, 8)}</span>
-                    </div>
-                    <div className={`text-[11px] font-bold mt-1 leading-tight ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{step.title}</div>
-                    {step.selector && <div className="mt-1 text-[9px] font-mono opacity-40 truncate max-w-[180px]">{step.selector}</div>}
-
-                    {isBranchSwitch && (
-                        <div className="absolute -right-2 -top-2 bg-orange-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full shadow-lg animate-pulse">
-                            BRANCH
-                        </div>
-                    )}
-                </motion.div>
-            </div>
-
-            {/* Children Container (Recursive) */}
-            {hasChildren && (
-                <div className="pl-4 ml-4 border-l-2 relative flex flex-col" style={{ borderColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
-                    {children.map((child, i) => (
-                        <StepNode
-                            key={child.id}
-                            step={child}
-                            childrenIds={child.childrenIds || []}
-                            allSteps={allSteps}
-                            depth={depth + 1}
-                            index={i}
-                            onSelect={onSelect}
-                            selectedId={selectedId}
-                            isDark={isDark}
-                            isLast={i === children.length - 1}
-                        />
-                    ))}
-                </div>
-            )}
-        </div>
-    );
-};
 
 export default function ExecutionGraph({ steps, selectedStep, onSelectStep }) {
     const { theme } = useTheme();
     const isDark = theme === 'dark';
     const containerRef = useRef(null);
 
-    // Transform flat list to Tree
-    const { treeRoots, processedSteps } = useMemo(() => {
-        if (!steps.length) return { treeRoots: [], processedSteps: [] };
-
-        // 1. Map ID -> Step & Initialize children
-        const stepMap = {};
-        steps.forEach((s, idx) => {
-            stepMap[s.id] = { ...s, childrenIds: [], tempIndex: idx };
-        });
-
-        const roots = [];
-
-        // 2. Build Hierarchy
-        steps.forEach(step => {
-            const enriched = stepMap[step.id];
-            if (enriched.parent_step_id && stepMap[enriched.parent_step_id]) {
-                stepMap[enriched.parent_step_id].childrenIds.push(step.id);
-            } else {
-                // Fallback for linear legacy data
-                roots.push(enriched);
-            }
-        });
-
-        // Fallback: If everything is a root (legacy data), chain them linearly
-        if (roots.length === steps.length && steps.length > 1) {
-            // Clear roots, rebuild as linked list
-            roots.length = 0;
-            roots.push(stepMap[steps[0].id]);
-            for (let i = 0; i < steps.length - 1; i++) {
-                stepMap[steps[i].id].childrenIds = [steps[i + 1].id];
-            }
-        }
-
-        return { treeRoots: roots, processedSteps: Object.values(stepMap) };
-    }, [steps]);
-
     useEffect(() => {
-        if (containerRef.current) containerRef.current.scrollTop = containerRef.current.scrollHeight;
+        if (containerRef.current) {
+            containerRef.current.scrollTop = containerRef.current.scrollHeight;
+        }
     }, [steps.length]);
 
     return (
         <div
             ref={containerRef}
-            className={`relative w-[400px] h-full overflow-y-auto overflow-x-hidden custom-scrollbar border-r p-6 pb-20 select-none ${isDark ? 'bg-[#050505] border-white/10' : 'bg-slate-50 border-slate-200'
+            className={`relative w-[400px] h-full overflow-y-auto overflow-x-hidden select-none custom-scrollbar border-r ${isDark ? 'bg-[#050505] border-white/10' : 'bg-slate-50 border-slate-200'
                 }`}
         >
-            <div className="space-y-4">
-                {treeRoots.length === 0 && steps.length === 0 && (
-                    <div className="text-center opacity-40 text-xs mt-10">Waiting for uplink...</div>
-                )}
+            {/* Background Grid Pattern (Subtle) */}
+            <div className="absolute inset-0 pointer-events-none opacity-5"
+                style={{ backgroundImage: `radial-gradient(${isDark ? '#fff' : '#000'} 1px, transparent 1px)`, backgroundSize: '20px 20px' }}
+            />
 
-                {treeRoots.map(root => (
-                    <StepNode
-                        key={root.id}
-                        step={root}
-                        childrenIds={root.childrenIds}
-                        allSteps={processedSteps}
-                        depth={0}
-                        onSelect={onSelectStep}
-                        selectedId={selectedStep?.id}
-                        isDark={isDark}
-                    />
-                ))}
+            <div className="relative min-h-full py-10 px-6">
+                {/* Main Vertical Timeline Line */}
+                <div className={`absolute left-[39px] top-0 bottom-0 w-0.5 ${isDark ? 'bg-white/10' : 'bg-slate-300'}`} />
 
-                {/* Live Indicator */}
-                {steps.length > 0 && (
-                    <div className="pl-4 ml-4 mt-2 border-l-2 border-dashed border-opacity-20 h-8 border-gray-500" />
-                )}
-                {steps.length > 0 && steps[steps.length - 1].status === 'running' && (
-                    <div className="flex items-center gap-3 pl-2 opacity-50">
-                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
-                        <span className="text-[9px] font-mono uppercase">Thinking...</span>
-                    </div>
-                )}
+                {/* LINEAR TIMELINE - Steps Rendering */}
+                <div className="relative space-y-8">
+                    {steps.map((step, idx) => {
+                        const isSelected = selectedStep?.id === step.id;
+                        const isSuccess = step.status === 'success';
+                        const isFailed = step.status === 'failed';
+                        const isRunning = step.status === 'running';
+
+                        // Detect if this step implies a branch/context switch (heuristic based on content)
+                        const isBranchSwitch = step.title?.toLowerCase().includes('branch') || step.expected_result?.toLowerCase().includes('branch');
+
+                        return (
+                            <motion.div
+                                key={step.id}
+                                initial={{ opacity: 0, x: -20, scale: 0.9 }}
+                                animate={{ opacity: 1, x: 0, scale: 1 }}
+                                onClick={() => onSelectStep(step)}
+                                className="relative pl-12 group cursor-pointer"
+                            >
+                                {/* Node Circle */}
+                                <div className={`absolute left-0 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full border-2 flex items-center justify-center z-10 transition-all duration-300 ${isSelected
+                                        ? 'border-blue-500 bg-blue-500 text-white scale-110 shadow-[0_0_15px_rgba(59,130,246,0.5)]'
+                                        : isSuccess
+                                            ? `border-emerald-500 ${isDark ? 'bg-black' : 'bg-white'} text-emerald-500 group-hover:bg-emerald-500/10`
+                                            : isFailed
+                                                ? `border-red-500 ${isDark ? 'bg-black' : 'bg-white'} text-red-500`
+                                                : `${isDark ? 'border-slate-700 bg-slate-900' : 'border-slate-300 bg-white'} text-slate-500`
+                                    }`}>
+                                    {isSuccess ? <Check size={14} strokeWidth={3} /> :
+                                        isFailed ? <X size={14} strokeWidth={3} /> :
+                                            isBranchSwitch ? <GitBranch size={14} /> :
+                                                <Circle size={10} fill="currentColor" opacity={0.5} />}
+                                </div>
+
+                                {/* Node Content Card */}
+                                <div className={`
+                   relative p-4 rounded-xl border transition-all duration-200
+                   ${isSelected
+                                        ? 'bg-blue-500/5 border-blue-500/30 translate-x-1'
+                                        : isDark
+                                            ? 'bg-[#0A0A0A] border-white/5 hover:border-white/10 hover:bg-white/5'
+                                            : 'bg-white border-slate-200 hover:border-blue-200 hover:shadow-md'
+                                    }
+                `}>
+                                    <div className="flex items-center justify-between mb-1">
+                                        <span className={`text-[9px] font-black uppercase tracking-widest ${isSelected ? 'text-blue-500' : isFailed ? 'text-red-500' : 'text-slate-500'}`}>
+                                            Step {idx + 1}
+                                        </span>
+                                        <span className="text-[9px] font-mono opacity-40">{new Date(step.created_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                                    </div>
+
+                                    <h4 className={`text-[11px] font-bold uppercase leading-tight line-clamp-2 ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                                        {step.title}
+                                    </h4>
+
+                                    {isBranchSwitch && (
+                                        <div className="mt-2 flex items-center gap-1.5 text-orange-500">
+                                            <GitBranch size={10} />
+                                            <span className="text-[8px] font-black uppercase tracking-widest">Branch Switch Detected</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </motion.div>
+                        );
+                    })}
+
+                    {/* Running Indicator at bottom */}
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className="pl-12 relative"
+                    >
+                        <div className={`absolute left-[3px] top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white/20 flex items-center justify-center z-10 ${isDark ? 'bg-black' : 'bg-white'}`}>
+                            <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse" />
+                        </div>
+                        <div className={`text-[9px] font-black uppercase tracking-[0.2em] animate-pulse ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
+                            Processing...
+                        </div>
+                    </motion.div>
+
+                </div>
             </div>
         </div>
     );
