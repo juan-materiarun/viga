@@ -294,80 +294,106 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             for (const el of elements) {
                 const action = await findOrCreateAction(el, currentUrl, getActionType(el));
                 const key = `${action.id}::${stateHash}`;
+                // Check local run cache AND database strict persistence
                 if (!executedInThisRun.has(key) && !(await hasActionBeenExecuted(suiteId, action.id, stateHash))) {
                     untested.push({ element: el, action });
                 }
             }
 
-            if (untested.length === 0) {
-                if (consecutiveStableStates >= STABILITY_THRESHOLD) {
-                    await recordStep(suiteId, page, '🏁 Cobertura Completa', 'success', `Se validaron ${actionsExecuted} pasos. No quedan acciones pendientes en esta vista.`, undefined, lastStepId);
-                    break;
+            // SCREEN COVERAGE AUDIT
+            const totalActions = elements.length;
+            const coveredActions = totalActions - untested.length;
+            await vigaLog(suiteId, `📊 Cobertura de Pantalla: ${coveredActions}/${totalActions} presuntamente ejecutadas.`, 'info');
+
+            // 1. STRICT RULE: Cannot leave if unseen actions exist
+            if (untested.length > 0) {
+                // Determine priority: Inputs > Toggles > Buttons > Links
+                const prioritized = prioritizeActions(untested.map(u => u.action));
+
+                // Smart Selection Logic
+                const hasComplexity = untested.length > 3 || untested.some(u => getActionType(u.element) === 'type');
+                let selected: { element: UIElement; action: UIAction } | undefined;
+                let payload = '';
+                let thought = 'Priorización de cobertura por defecto.';
+
+                // AI Decision Budget
+                if (hasComplexity && llmCalls < MAX_LLM_CALLS) {
+                    llmCalls++;
+                    const context = JSON.stringify({
+                        url: currentUrl,
+                        total: totalActions,
+                        untested_count: untested.length,
+                        candidates: untested.map((u, i) => ({ i, title: u.action.canonical_name, role: u.action.role }))
+                    });
+                    const decision = await callGroqJSON(llmCtx, CHAOS_SYSTEM, context);
+                    if (decision && typeof decision.action_index === 'number') {
+                        selected = untested[decision.action_index] || untested[0];
+                        payload = decision.payload || '';
+                        thought = decision.thought || thought;
+                    }
                 }
-                const links = elements.filter(e => e.tag === 'a');
-                if (links.length > 0) {
-                    const target = links[0];
-                    await page.click(target.selector);
-                    await sleep(2000);
-                    continue;
+
+                if (!selected) {
+                    // Fallback: Pick top determined priority
+                    const topAction = prioritized[0];
+                    selected = untested.find(u => u.action.id === topAction.id) || untested[0];
+                    if (getActionType(selected.element) === 'type') payload = generatePayload(selected.element, credentials);
                 }
+
+                const { element, action } = selected;
+                const actionType = getActionType(element);
+                const stepTitle = action.canonical_name;
+
+                await vigaLog(suiteId, `👉 [${actionsExecuted + 1}/${MAX_ACTIONS}] ${stepTitle}`, 'info');
+
+                try {
+                    if (actionType === 'type') await page.fill(element.selector, payload);
+                    else await page.click(element.selector, { timeout: 8000 });
+
+                    actionsExecuted++;
+                    await sleep(1500); // Wait for reaction
+                    const stateActionKey = `${action.id}::${stateHash}`;
+                    executedInThisRun.add(stateActionKey);
+
+                    const stepId = await recordStep(suiteId, page, stepTitle, 'success', thought, {
+                        selector: element.selector, xpath: element.xpath, actionType, payload: actionType === 'type' ? '***' : undefined, actionId: action.id
+                    }, lastStepId);
+
+                    if (stepId) {
+                        lastStepId = stepId;
+                        await recordActionExecution(suiteId, action.id, stateHash, stepId);
+                    }
+                    // Reset stability since we took action
+                    consecutiveStableStates = 0;
+
+                } catch (err: any) {
+                    await vigaLog(suiteId, `⚠️ Fallo en acción: ${err.message}`, 'warning');
+                    // Mark as executed to prevent infinite loop on broken element
+                    executedInThisRun.add(`${action.id}::${stateHash}`);
+                    await recordActionExecution(suiteId, action.id, stateHash);
+                }
+
+                // Force loop to continue - do not evaluate termination yet
+                continue;
+            }
+
+            // 2. COVERAGE COMPLETE - Check for Navigation or Termination
+            await vigaLog(suiteId, `✅ Pantalla cubierta al 100%. Evaluando navegación...`, 'success');
+
+            if (consecutiveStableStates >= STABILITY_THRESHOLD) {
+                // We are 100% covered and have been stable for N cycles => TRAPPED or DONE
+                await recordStep(suiteId, page, '🏁 Ejecución Finalizada', 'success', `Cobertura completa alcanzada: ${actionsExecuted} pasos. Toda la UI accesible ha sido validada.`, undefined, lastStepId);
                 break;
             }
 
-            // SMART DECISION logic
-            const prioritized = prioritizeActions(untested.map(u => u.action));
-            const hasComplexity = untested.length > 3 || untested.some(u => getActionType(u.element) === 'type');
+            // Try to find ANY link to leave (even if executed, if we are still here, maybe try again or find one that wasn't a "link" role but acts as one)
+            // Note: If untested is 0, we have clicked all links already?
+            // If we are here, it means we clicked them and stayed on page. 
+            // We'll let the stability counter kill it naturally.
+            consecutiveStableStates++;
+            await sleep(1000);
 
-            let selected: { element: UIElement; action: UIAction } | undefined;
-            let payload = '';
-            let thought = 'Priorización determinística por tipo de control.';
-
-            if (hasComplexity && llmCalls < MAX_LLM_CALLS) {
-                llmCalls++;
-                const context = JSON.stringify({ url: currentUrl, elements: untested.map((u, i) => ({ i, title: u.action.canonical_name })) });
-                const decision = await callGroqJSON(llmCtx, CHAOS_SYSTEM, context);
-                if (decision && typeof decision.action_index === 'number') {
-                    selected = untested[decision.action_index] || untested[0];
-                    payload = decision.payload || '';
-                    thought = decision.thought || thought;
-                }
-            }
-
-            if (!selected) {
-                const topAction = prioritized[0];
-                selected = untested.find(u => u.action.id === topAction.id) || untested[0];
-                if (getActionType(selected.element) === 'type') payload = generatePayload(selected.element, credentials);
-            }
-
-            const { element, action } = selected;
-            const actionType = getActionType(element);
-            const stepTitle = action.canonical_name;
-
-            await vigaLog(suiteId, `👉 [${actionsExecuted + 1}/${MAX_ACTIONS}] ${stepTitle} ${hasComplexity ? '(AI)' : '(Auto)'}`, 'info');
-
-            try {
-                if (actionType === 'type') await page.fill(element.selector, payload);
-                else await page.click(element.selector, { timeout: 8000 });
-
-                actionsExecuted++;
-                await sleep(1500);
-                const stateActionKey = `${action.id}::${stateHash}`;
-                executedInThisRun.add(stateActionKey);
-
-                const stepId = await recordStep(suiteId, page, stepTitle, 'success', thought, {
-                    selector: element.selector, xpath: element.xpath, actionType, payload: actionType === 'type' ? '***' : undefined, actionId: action.id
-                }, lastStepId);
-
-                if (stepId) {
-                    lastStepId = stepId;
-                    await recordActionExecution(suiteId, action.id, stateHash, stepId);
-                }
-            } catch (err: any) {
-                await vigaLog(suiteId, `⚠️ Error: ${err.message}`, 'warning');
-                executedInThisRun.add(`${action.id}::${stateHash}`);
-                await recordActionExecution(suiteId, action.id, stateHash);
-            }
-
+            // Update progress
             await updateJobProgress(jobId, { current_action: actionsExecuted, max_actions: MAX_ACTIONS });
         }
 
