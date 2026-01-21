@@ -12,7 +12,10 @@ import {
     computeSimilarity,
     generateCanonicalName,
     normalizeUrl,
-    detectContainer
+    detectContainer,
+    inferIntent,
+    inferActionCategory,
+    ActionCategory
 } from './fingerprint';
 
 export interface UIAction {
@@ -31,6 +34,11 @@ export interface UIAction {
     last_seen_at: string;
     execution_count: number;
     dom_delta_signature: string | null;
+    metadata: {
+        semantic_intent?: string;
+        [key: string]: any;
+    };
+    action_category: ActionCategory;
 }
 
 const SIMILARITY_THRESHOLD = 0.75;
@@ -121,7 +129,11 @@ export async function findOrCreateAction(
                 { type: 'css', value: element.selector },
                 ...(element.xpath ? [{ type: 'xpath', value: element.xpath }] : [])
             ],
-            execution_count: 0
+            execution_count: 0,
+            metadata: {
+                semantic_intent: inferIntent(element)
+            },
+            action_category: inferActionCategory(element, inferIntent(element))
         };
 
         const { data: created, error } = await supabase

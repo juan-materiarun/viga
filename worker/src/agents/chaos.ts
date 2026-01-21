@@ -36,6 +36,9 @@ const MAX_ACTIONS = 50;
 const MAX_LLM_CALLS = 15;
 const STABILITY_THRESHOLD = 3;
 
+// V3 EXPERIMENTAL (Feature Flag)
+const CHAOS_V3_EXPERIMENTAL = process.env.CHAOS_V3_EXPERIMENTAL === 'true' || false;
+
 async function vigaLog(
     suiteId: string,
     message: string,
@@ -274,6 +277,10 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
     let lastStateHash: string = '';
     const executedInThisRun = new Set<string>();
 
+    // V3 EXPERIMENTAL: Global state tracking
+    const globalStateActions = new Set<string>(); // Actions that are GLOBAL_STATE category
+    let requiresRescan = false; // Flag for depth-aware rescan
+
     try {
         await page.goto(url, { waitUntil: 'domcontentloaded' });
         try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (e) { }
@@ -369,8 +376,9 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 const { element, action } = selected;
                 const actionType = getActionType(element);
                 const stepTitle = action.canonical_name;
+                const intent = action.metadata?.semantic_intent || 'UNKNOWN';
 
-                await vigaLog(suiteId, `👉 [${actionsExecuted + 1}/${MAX_ACTIONS}] ${stepTitle}`, 'info');
+                await vigaLog(suiteId, `👉 [${actionsExecuted + 1}/${MAX_ACTIONS}] ${stepTitle} [${intent}]`, 'info');
 
                 try {
                     if (actionType === 'type') await page.fill(element.selector, payload);
@@ -389,6 +397,31 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                         lastStepId = stepId;
                         await recordActionExecution(suiteId, action.id, stateHash, stepId);
                     }
+
+                    // V3 EXPERIMENTAL: Global State & Depth Detection
+                    if (CHAOS_V3_EXPERIMENTAL) {
+                        // Track global state actions
+                        if (action.action_category === 'GLOBAL_STATE') {
+                            globalStateActions.add(action.id);
+                            // Don't mark as "executed" for coverage purposes
+                            // (allow re-execution for state exploration)
+                            console.log(`[V3] Global state action detected: ${action.canonical_name}`);
+                        }
+
+                        // Depth-aware rescan detection
+                        const beforeState = { url: currentUrl, elementCount: elements.length };
+                        await sleep(500); // Allow DOM to settle
+
+                        const afterUrl = page.url();
+                        const urlChanged = beforeState.url !== afterUrl;
+                        const modalOpened = await page.locator('[role="dialog"], .modal, [aria-modal="true"]').count().catch(() => 0) > 0;
+
+                        if (urlChanged || modalOpened) {
+                            requiresRescan = true;
+                            console.log(`[V3] Depth change detected. Forcing rescan.`);
+                        }
+                    }
+
                     // Reset stability since we took action
                     consecutiveStableStates = 0;
 
@@ -424,6 +457,31 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
         }
 
         await vigaLog(suiteId, `🏁 Finalizado: ${actionsExecuted} pasos.`, 'success');
+
+        // V3 EXPERIMENTAL: Generate test narrative
+        if (CHAOS_V3_EXPERIMENTAL) {
+            try {
+                const { generateTestNarrative } = await import('../lib/narrative');
+                const { data: steps } = await supabase
+                    .from('test_steps')
+                    .select('id, title, status, expected_result, action_type, created_at')
+                    .eq('suite_id', suiteId)
+                    .order('created_at', { ascending: true });
+
+                if (steps && steps.length > 0) {
+                    const narrative = generateTestNarrative(steps as any[]);
+                    await supabase.from('test_suites').update({
+                        narrative: narrative.full_narrative,
+                        objective: narrative.objective
+                    }).eq('id', suiteId);
+
+                    console.log(`[V3] Test narrative generated: ${narrative.objective}`);
+                }
+            } catch (e: any) {
+                console.warn('[V3] Narrative generation failed:', e.message);
+            }
+        }
+
         await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
 
     } catch (e: any) {

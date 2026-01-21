@@ -123,6 +123,88 @@ function inferRole(element: UIElement): string {
     return tag;
 }
 
+export type SemanticIntent = 'DOWNLOAD' | 'NAVIGATION' | 'SUBMIT' | 'TOGGLE' | 'EXPORT' | 'INPUT' | 'ACTION' | 'UNKNOWN';
+
+/**
+ * Infer the semantic intent of an action based on its properties.
+ * This categorizes the "purpose" of the action (e.g., Export vs Navigation).
+ */
+export function inferIntent(element: UIElement): SemanticIntent {
+    const tag = element.tag.toLowerCase();
+    const role = element.attributes?.role || inferRole(element);
+    const label = (element.attributes?.['aria-label'] || '').toLowerCase();
+    const text = (element.text || '').toLowerCase();
+    const hint = (element.hint || '').toLowerCase();
+    const type = (element.attributes?.type || '').toLowerCase();
+
+    const context = `${label} ${text} ${hint}`.trim();
+
+    // 1. INPUT (Strictly text entry)
+    if (tag === 'textarea' || (tag === 'input' && !['button', 'submit', 'checkbox', 'radio', 'file'].includes(type))) {
+        return 'INPUT';
+    }
+
+    // 2. TOGGLE
+    if (role === 'toggle' || role === 'switch' || role === 'checkbox' || role === 'radio' || context.includes('toggle') || context.includes('alternar')) {
+        return 'TOGGLE';
+    }
+
+    // 3. EXPORT / SHARE
+    if (context.includes('export') || context.includes('share') || context.includes('compartir') || context.includes('imprimir') || context.includes('print')) {
+        return 'EXPORT';
+    }
+
+    // 4. DOWNLOAD
+    if (context.includes('download') || context.includes('descargar') || context.includes('bajar') || context.includes('guardar como')) {
+        return 'DOWNLOAD';
+    }
+
+    // 5. SUBMIT / FORM ACTION
+    if (role === 'submit-button' || type === 'submit' || context.includes('enviar') || context.includes('confirmar') || context.includes('save') || context.includes('guardar')) {
+        return 'SUBMIT';
+    }
+
+    // 6. NAVIGATION
+    if (tag === 'a' || role === 'link' || context.includes('nav') || context.includes('menu') || context.includes('home') || context.includes('inicio') || context.includes('volver')) {
+        return 'NAVIGATION';
+    }
+
+    // 7. GENERAL ACTION
+    if (tag === 'button' || role === 'button' || role.includes('button')) {
+        return 'ACTION';
+    }
+
+    return 'UNKNOWN';
+}
+
+export type ActionCategory = 'STANDARD' | 'GLOBAL_STATE' | 'NAVIGATION' | 'FORM_SUBMIT';
+
+/**
+ * Infer the action category for v3 global state handling.
+ * GLOBAL_STATE actions are reversible and don't consume coverage.
+ */
+export function inferActionCategory(element: UIElement, intent: SemanticIntent): ActionCategory {
+    const hint = (element.hint || '').toLowerCase();
+    const text = (element.text || '').toLowerCase();
+    const label = (element.attributes?.['aria-label'] || '').toLowerCase();
+
+    const context = `${hint} ${text} ${label}`.trim();
+
+    // Global state indicators (theme, language, sidebar)
+    if (intent === 'TOGGLE' && (
+        context.includes('theme') || context.includes('tema') ||
+        context.includes('language') || context.includes('idioma') || context.includes('lang') ||
+        context.includes('dark') || context.includes('light') || context.includes('oscuro') || context.includes('claro') ||
+        context.includes('sidebar') || context.includes('menu') && context.includes('toggle')
+    )) {
+        return 'GLOBAL_STATE';
+    }
+
+    if (intent === 'NAVIGATION') return 'NAVIGATION';
+    if (intent === 'SUBMIT') return 'FORM_SUBMIT';
+    return 'STANDARD';
+}
+
 /**
  * Normalize text for comparison: lowercase, trim, collapse whitespace.
  */
