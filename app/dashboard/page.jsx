@@ -178,7 +178,7 @@ export default function MissionControlPage() {
         {/* HEADER */}
         <header className="mb-16">
           <div className="flex items-center gap-3 mb-2">
-            <span className="text-[9px] font-black uppercase tracking-[0.3em] text-blue-600">⚡ Swarm Intel v2.0</span>
+            <span className="text-[9px] font-black uppercase tracking-[0.3em] text-blue-600">⚡ VIGA Core v3.1</span>
           </div>
           <div className="flex items-center justify-between">
             <h1 className="text-6xl font-black tracking-tighter uppercase italic leading-none">
