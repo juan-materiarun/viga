@@ -213,30 +213,47 @@ function normalizeText(text: string): string {
 }
 
 /**
- * Generate a human-readable canonical name for an action.
- * This is what users will see in the test report.
+ * Generate a human-readable canonical name for an action using semantic intent.
+ * This is what users will see in the test report and UI.
  */
 export function generateCanonicalName(element: UIElement, actionType: 'click' | 'type'): string {
-    const role = element.attributes?.role || inferRole(element);
     const label = extractBestLabel(element);
+    const intent = inferIntent(element);
 
+    // Intent-based naming (V3 Phase 2)
+    switch (intent) {
+        case 'DOWNLOAD':
+            return `Descargar "${label || 'archivo'}"`;
+        case 'EXPORT':
+            return `Exportar "${label || 'datos'}"`;
+        case 'NAVIGATION':
+            return `Navegar a "${label || 'sección'}"`;
+        case 'SUBMIT':
+            return `Enviar formulario "${label || 'principal'}"`;
+        case 'TOGGLE':
+            return `Alternar "${label || 'opción'}"`;
+        case 'INPUT':
+            return `Completar campo "${label || 'texto'}"`;
+    }
+
+    // Fallback to role-based naming if intent is generic ACTION/UNKNOWN
+    const role = element.attributes?.role || inferRole(element);
     const actionVerbs: Record<string, Record<string, string>> = {
         click: {
-            'toggle': 'Alternar',
             'checkbox': 'Marcar/Desmarcar',
-            'radio': 'Seleccionar opción',
-            'submit-button': 'Enviar formulario',
+            'radio': 'Seleccionar',
+            'submit-button': 'Enviar',
             'close-button': 'Cerrar',
             'button': 'Activar',
-            'link': 'Navegar a',
-            'dropdown': 'Abrir selector',
+            'link': 'Ir a',
+            'dropdown': 'Abrir',
             'default': 'Interactuar con'
         },
         type: {
             'password-input': 'Ingresar contraseña en',
             'email-input': 'Ingresar email en',
-            'search-input': 'Buscar en',
-            'text-input': 'Completar campo',
+            'search-input': 'Buscar',
+            'text-input': 'Escribir en',
             'textarea': 'Escribir en',
             'default': 'Escribir en'
         }
@@ -245,7 +262,6 @@ export function generateCanonicalName(element: UIElement, actionType: 'click' | 
     const verbs = actionVerbs[actionType] || actionVerbs.click;
     const verb = verbs[role] || verbs.default;
 
-    // Construct readable name
     if (label) {
         return `${verb} "${label}"`;
     } else {
@@ -352,7 +368,20 @@ function stringSimilarity(a: string, b: string): number {
  * Compute a hash representing the current DOM state.
  * Used to detect if we're in the same state as before.
  */
-export function computeStateHash(url: string, elementCount: number, pageTitle?: string): string {
-    const data = `${normalizeUrl(url)}::${elementCount}::${pageTitle || ''}`;
+export function computeStateHash(
+    url: string,
+    elementCount: number,
+    pageTitle?: string,
+    globalState?: Record<string, string>
+): string {
+    const safeTitle = (pageTitle || '').trim();
+
+    // V3 Phase 3: Include global state in hash
+    let stateStr = '';
+    if (globalState && Object.keys(globalState).length > 0) {
+        stateStr = JSON.stringify(globalState, Object.keys(globalState).sort());
+    }
+
+    const data = `${normalizeUrl(url)}::${elementCount}::${safeTitle}::${stateStr}`;
     return crypto.createHash('md5').update(data).digest('hex');
 }

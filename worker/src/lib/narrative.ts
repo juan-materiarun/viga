@@ -52,7 +52,23 @@ export function generateTestNarrative(steps: TestStep[]): TestNarrative {
         ? `✅ Flujo completado exitosamente (${totalCount} pasos)`
         : `⚠️ Flujo parcial: ${successCount}/${totalCount} pasos exitosos (${successRate}%)`;
 
+    // phase 4.3: Executive Summary
+    const warnings = steps.filter(s => s.status === 'warning').map(s => s.title);
+    const topRisks = warnings.slice(0, 3).map(w => `- ⚠️ Warning en paso: "${w}"`).join('\n') || '✅ Ninguno detectado.';
+
+    const executiveSummary = `
+## 📑 Executive Summary
+- **Stability Score**: ${successRate >= 90 ? '🟢 Alta' : successRate >= 70 ? '🟡 Media' : '🔴 Baja'} (${successRate}%)
+- **Flow Validated**: ${mainFlow}
+- **Top Risks**:
+${topRisks}
+    `.trim();
+
     const full_narrative = `
+${executiveSummary}
+
+---
+
 **Objetivo**: ${objective}
 
 **Precondiciones**: ${preconditions}

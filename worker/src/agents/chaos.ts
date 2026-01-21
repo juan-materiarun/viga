@@ -12,7 +12,7 @@
 import crypto from 'crypto';
 import { getBrowser } from '../lib/browser';
 import { captureEvidence } from '../lib/evidence';
-import { callGroqJSON, createLLMContext } from '../lib/llm';
+import { callGroqJSON, createLLMContext, batchRankActions } from '../lib/llm';
 import { supabase, updateJobProgress } from '../lib/supabase';
 import {
     UIElement,
@@ -28,6 +28,9 @@ import {
     recordActionExecution,
     prioritizeActions
 } from '../lib/actions';
+import { captureState, validateActionEffect } from '../lib/validators';
+import { SemanticIntent } from '../lib/fingerprint';
+import { inferStateKeyValue, recordGlobalStateChange } from '../lib/v3_experimental';
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -38,6 +41,7 @@ const STABILITY_THRESHOLD = 3;
 
 // V3 EXPERIMENTAL (Feature Flag)
 const CHAOS_V3_EXPERIMENTAL = process.env.CHAOS_V3_EXPERIMENTAL === 'true' || false;
+const CHAOS_REPLAY_MODE = process.env.CHAOS_REPLAY_MODE === 'true' || false;
 
 async function vigaLog(
     suiteId: string,
@@ -66,7 +70,8 @@ async function recordStep(
         xpath?: string,
         actionType?: 'click' | 'type' | 'navigate',
         payload?: string,
-        actionId?: string
+        actionId?: string,
+        validationResult?: any
     },
     parentStepId?: string
 ): Promise<string | null> {
@@ -276,10 +281,12 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
     let consecutiveStableStates = 0;
     let lastStateHash: string = '';
     const executedInThisRun = new Set<string>();
+    let stepsWithoutValue = 0; // Phase 4.2
 
     // V3 EXPERIMENTAL: Global state tracking
-    const globalStateActions = new Set<string>(); // Actions that are GLOBAL_STATE category
-    let requiresRescan = false; // Flag for depth-aware rescan
+    const globalStateActions = new Set<string>();
+    let requiresRescan = false;
+    let currentGlobalState: Record<string, string> = {}; // { theme: 'dark', lang: 'es' }
 
     try {
         await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -293,7 +300,9 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             const pageTitle = await page.title().catch(() => 'Unknown');
             if (elements.length === 0) break;
 
-            const stateHash = computeStateHash(currentUrl, elements.length, pageTitle);
+            // Phase 3: Include global state in hash
+            const stateHash = computeStateHash(currentUrl, elements.length, pageTitle, CHAOS_V3_EXPERIMENTAL ? currentGlobalState : undefined);
+
             if (stateHash === lastStateHash) consecutiveStableStates++;
             else { consecutiveStableStates = 0; lastStateHash = stateHash; }
 
@@ -302,6 +311,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
             const untested: { element: UIElement; action: UIAction }[] = [];
             const actionIdsOnScreen = new Set<string>();
+            const snapshotRows: any[] = []; // V3 Phase 3
 
             for (const el of elements) {
                 // Pass scanStartTime to prevent fuzzy matching against actions created within this loop
@@ -311,6 +321,18 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 // DIAGNOSTIC LOG (Requested by USER)
                 const fingerprint = computeFingerprint(el, currentUrl);
                 console.log(`[SCAN-DEBUG] fingerprint=${fingerprint} assigned_action_id=${action.id}`);
+
+                // V3 Phase 3: Accumulate Snapshot
+                if (CHAOS_V3_EXPERIMENTAL) {
+                    snapshotRows.push({
+                        suite_id: suiteId,
+                        state_hash: stateHash,
+                        action_id: action.id,
+                        selector: el.selector,
+                        canonical_name: action.canonical_name,
+                        was_executed: false
+                    });
+                }
 
                 actionIdsOnScreen.add(action.id);
 
@@ -322,12 +344,27 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 // INVARIANT 2: Database Persistence Check (State persistence)
                 const executedInDB = await hasActionBeenExecuted(suiteId, action.id, stateHash);
 
+                // V3 Logic: Global State actions are always valid candidates if they aren't "burned" or we want to re-toggle
+                // But generally we should prioritize UNTESTED.
+                const isGlobalState = action.action_category === 'GLOBAL_STATE';
+
                 if (!executedInRuntime && !executedInDB) {
                     untested.push({ element: el, action });
+                } else if (isGlobalState && CHAOS_V3_EXPERIMENTAL) {
+                    // Assuming we might want to re-execute global state to switch back? 
+                    // For now, let's stick to "not executed in this run" for global state to avoid infinite flapping
+                    if (!executedInRuntime) untested.push({ element: el, action });
                 } else {
                     // Ensure runtime set is in sync with DB if we found it in DB
                     if (executedInDB) executedInThisRun.add(key);
                 }
+            }
+
+            // V3 Phase 3: Commit Snapshots
+            if (CHAOS_V3_EXPERIMENTAL && snapshotRows.length > 0) {
+                await supabase.from('discovered_elements_snapshot')
+                    .upsert(snapshotRows, { onConflict: 'suite_id,state_hash,action_id', ignoreDuplicates: true })
+                    .then(({ error }) => { if (error) console.warn('[V3] Snapshot error:', error.message); });
             }
 
             // INVARIANT 3: Coverage calculation from TRUTH (DB/Runtime), not inference
@@ -343,34 +380,50 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 // Determine priority: Inputs > Toggles > Buttons > Links
                 const prioritized = prioritizeActions(untested.map(u => u.action));
 
-                // Smart Selection Logic
-                const hasComplexity = untested.length > 3 || untested.some(u => getActionType(u.element) === 'type');
+                // Phase 4: Prioritization (Heuristic + Batch LLM)
+                // Sort by heuristic first (Inputs > Buttons > Toggles > Links)
+                const heuristicSortedActions = prioritizeActions(untested.map(u => u.action));
+                const sortedUntested = heuristicSortedActions.map(a => untested.find(u => u.action.id === a.id)!).filter(Boolean);
+
                 let selected: { element: UIElement; action: UIAction } | undefined;
                 let payload = '';
-                let thought = 'Priorización de cobertura por defecto.';
+                let thought = 'Priorización heurística (Deterministic).';
 
-                // AI Decision Budget
-                if (hasComplexity && llmCalls < MAX_LLM_CALLS) {
-                    llmCalls++;
-                    const context = JSON.stringify({
-                        url: currentUrl,
-                        total: totalActions,
-                        untested_count: untested.length,
-                        candidates: untested.map((u, i) => ({ i, title: u.action.canonical_name, role: u.action.role }))
-                    });
-                    const decision = await callGroqJSON(llmCtx, CHAOS_SYSTEM, context);
-                    if (decision && typeof decision.action_index === 'number') {
-                        selected = untested[decision.action_index] || untested[0];
-                        payload = decision.payload || '';
-                        thought = decision.thought || thought;
+                // PHASE 4.1: Batch Intelligence & Optimization
+                // Only use LLM if NOT in Replay Mode, we have options, and budget exists
+                const shouldUseLLM = !CHAOS_REPLAY_MODE && sortedUntested.length > 1 && llmCalls < MAX_LLM_CALLS;
+
+                if (shouldUseLLM) {
+                    // Take top 8 candidates from heuristic baseline
+                    const candidates = sortedUntested.slice(0, 8);
+
+                    // Semantic Cache: Skip reasoning for well-known actions (executed > 5 times historically)
+                    const needsReasoning = candidates.filter(c => c.action.execution_count < 5);
+
+                    if (needsReasoning.length > 1) {
+                        llmCalls++; // One batch call replaces multiple heuristic checks
+                        const rankResult = await batchRankActions(llmCtx, candidates.map(c => ({
+                            id: c.action.id,
+                            name: c.action.canonical_name,
+                            category: c.action.action_category
+                        })));
+
+                        if (rankResult) {
+                            selected = untested.find(u => u.action.id === rankResult.selected_id);
+                            thought = `🧠 AI Decision: ${rankResult.reason}`;
+                        }
+                    } else if (candidates.length > 0 && needsReasoning.length <= 1) {
+                        thought = '⚡ Semantic Cache (Known Action)';
                     }
                 }
 
                 if (!selected) {
-                    // Fallback: Pick top determined priority
-                    const topAction = prioritized[0];
-                    selected = untested.find(u => u.action.id === topAction.id) || untested[0];
-                    if (getActionType(selected.element) === 'type') payload = generatePayload(selected.element, credentials);
+                    // Fallback: Pick top heuristic
+                    selected = sortedUntested[0];
+                    if (getActionType(selected.element) === 'type') {
+                        // Simple payload for now, or use generatePayload if critical
+                        payload = 'test-input';
+                    }
                 }
 
                 const { element, action } = selected;
@@ -380,7 +433,12 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                 await vigaLog(suiteId, `👉 [${actionsExecuted + 1}/${MAX_ACTIONS}] ${stepTitle} [${intent}]`, 'info');
 
+                let executionStatus: 'success' | 'warning' | 'failed' = 'failed';
+
                 try {
+                    // V3 Phase 2: Capture state before action
+                    const beforeState = await captureState(page);
+
                     if (actionType === 'type') await page.fill(element.selector, payload);
                     else await page.click(element.selector, { timeout: 8000 });
 
@@ -389,8 +447,17 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     const stateActionKey = `${action.id}::${stateHash}`;
                     executedInThisRun.add(stateActionKey);
 
-                    const stepId = await recordStep(suiteId, page, stepTitle, 'success', thought, {
-                        selector: element.selector, xpath: element.xpath, actionType, payload: actionType === 'type' ? '***' : undefined, actionId: action.id
+                    const validation = await validateActionEffect(page, action, intent as SemanticIntent, beforeState);
+                    const stepStatus = validation.passed ? 'success' : 'warning';
+                    executionStatus = stepStatus; // Track for termination logic
+                    const evidenceMsg = validation.evidence || thought;
+
+                    if (!validation.passed) {
+                        await vigaLog(suiteId, `⚠️ Validation Warning: ${validation.evidence}`, 'warning');
+                    }
+
+                    const stepId = await recordStep(suiteId, page, stepTitle, stepStatus, evidenceMsg, {
+                        selector: element.selector, xpath: element.xpath, actionType, payload: actionType === 'type' ? '***' : undefined, actionId: action.id, validationResult: validation
                     }, lastStepId);
 
                     if (stepId) {
@@ -400,16 +467,32 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                     // V3 EXPERIMENTAL: Global State & Depth Detection
                     if (CHAOS_V3_EXPERIMENTAL) {
+                        // Phase 3: Mark Discovered Element as Executed
+                        await supabase.from('discovered_elements_snapshot')
+                            .update({ was_executed: true })
+                            .match({ suite_id: suiteId, state_hash: stateHash, action_id: action.id });
+
                         // Track global state actions
                         if (action.action_category === 'GLOBAL_STATE') {
                             globalStateActions.add(action.id);
-                            // Don't mark as "executed" for coverage purposes
-                            // (allow re-execution for state exploration)
-                            console.log(`[V3] Global state action detected: ${action.canonical_name}`);
+
+                            // Phase 3: Update Persistent Global State
+                            const newStateInfo = inferStateKeyValue(action);
+                            if (newStateInfo) {
+                                currentGlobalState[newStateInfo.key] = newStateInfo.value;
+                                await recordGlobalStateChange(suiteId, action, newStateInfo.key, newStateInfo.value);
+                                console.log(`[V3] Global State Updated: ${JSON.stringify(currentGlobalState)}`);
+
+                                // Force re-scan to explore new state immediately
+                                consecutiveStableStates = 0;
+                                lastStateHash = ''; // Invalidate hash so next loop sees "change"
+                            } else {
+                                console.log(`[V3] Global state action detected: ${action.canonical_name}`);
+                            }
                         }
 
                         // Depth-aware rescan detection
-                        const beforeState = { url: currentUrl, elementCount: elements.length };
+                        // Reuse beforeState captured at start of action block
                         await sleep(500); // Allow DOM to settle
 
                         const afterUrl = page.url();
@@ -430,6 +513,19 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     // Mark as executed to prevent infinite loop on broken element
                     executedInThisRun.add(`${action.id}::${stateHash}`);
                     await recordActionExecution(suiteId, action.id, stateHash);
+                    executionStatus = 'failed';
+                }
+
+                // PHASE 4.2: Smart Termination (Diminishing Returns)
+                if (executionStatus === 'success' || (CHAOS_V3_EXPERIMENTAL && requiresRescan)) {
+                    stepsWithoutValue = 0;
+                } else {
+                    stepsWithoutValue++;
+                }
+
+                if (!CHAOS_REPLAY_MODE && stepsWithoutValue >= 5) {
+                    await vigaLog(suiteId, '🛑 Smart Termination: Diminishing Returns (Sin valor en últimos 5 pasos)', 'info');
+                    break;
                 }
 
                 // Force loop to continue - do not evaluate termination yet

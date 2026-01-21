@@ -107,3 +107,33 @@ DIRECTIVAS DE QA SENIOR:
         return callGroqJSON(ctx, system, user, retries - 1);
     }
 }
+
+
+/**
+ * PHASE 4: Batch Ranking of Actions
+ * Ranks candidate actions to find the most valuable next step.
+ */
+export async function batchRankActions(
+    ctx: LLMContext,
+    candidates: { id: string; name: string; category: string }[],
+    goal?: string
+): Promise<{ selected_id: string; reason: string } | null> {
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return { selected_id: candidates[0].id, reason: 'Only candidate available' };
+
+    const system = `You are a Chaos Testing Agent. Return the ID of the SINGLE most valuable action to execute next.
+PRIORITY:
+1. Actions that reveal new content (Open Modal, Expand, Navigate).
+2. Form interactions (Inputs, Submits).
+3. State toggles (only if likely to show new UI).
+4. Ignore purely decorative or redundant links.
+5. PREFER actions that match the goal: "${goal || 'Explore everything'}".`;
+
+    const user = `Candidates:
+${candidates.map(c => `- [${c.id}] (${c.category}) ${c.name}`).join('\n')}
+
+Response Format JSON: { "selected_id": "uuid", "reason": "short explanation" }`;
+
+    const res = await callGroqJSON(ctx, system, user);
+    return res;
+}
