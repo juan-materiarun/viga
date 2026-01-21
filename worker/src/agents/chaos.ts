@@ -468,6 +468,18 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     // V3.1: Log validation result
                     console.log(`[VALIDATOR] result=${stepStatus} | evidence=${validation.evidence || 'none'}`);
 
+                    // V3.1 CRITICAL: Regenerate canonical_name with full context after validation
+                    // Problem: Names are frozen at creation time, missing role=tab, observed effects
+                    // Solution: Regenerate with complete context and update if more specific
+                    const regeneratedName = generateCanonicalName(element, actionType);
+                    if (regeneratedName !== action.canonical_name && !regeneratedName.startsWith('Activar')) {
+                        console.log(`[RENAME] ${action.canonical_name} → ${regeneratedName}`);
+                        await supabase.from('ui_actions')
+                            .update({ canonical_name: regeneratedName })
+                            .eq('id', action.id);
+                        action.canonical_name = regeneratedName; // Update local reference
+                    }
+
                     if (!validation.passed) {
                         await vigaLog(suiteId, `⚠️ Validation Warning: ${validation.evidence}`, 'warning');
                     }

@@ -318,26 +318,27 @@ function sanitizeLabel(label: string | undefined): string {
 
 /**
  * Extract the best human-readable label for an element.
+ * V3.1: All labels are sanitized to prevent HTML leakage.
  */
 function extractBestLabel(element: UIElement): string {
     // Priority: aria-label > placeholder > visible text > name > id
     const ariaLabel = element.attributes?.['aria-label'];
-    if (ariaLabel && ariaLabel.length > 2) return ariaLabel.slice(0, 40);
+    if (ariaLabel && ariaLabel.length > 2) return sanitizeLabel(ariaLabel.slice(0, 40));
 
     const placeholder = element.attributes?.placeholder;
-    if (placeholder && placeholder.length > 2) return placeholder.slice(0, 40);
+    if (placeholder && placeholder.length > 2) return sanitizeLabel(placeholder.slice(0, 40));
 
     // From hint (first part before |)
     const hintPart = element.hint?.split('|')[0]?.trim();
-    if (hintPart && hintPart.length > 2 && hintPart.length < 50) return hintPart;
+    if (hintPart && hintPart.length > 2 && hintPart.length < 50) return sanitizeLabel(hintPart);
 
     // Visible text
     const text = element.text?.trim();
-    if (text && text.length > 2 && text.length < 50) return text;
+    if (text && text.length > 2 && text.length < 50) return sanitizeLabel(text);
 
     // Name attribute
     const name = element.attributes?.name;
-    if (name) return name.replace(/[-_]/g, ' ');
+    if (name) return sanitizeLabel(name.replace(/[-_]/g, ' '));
 
     return '';
 }
