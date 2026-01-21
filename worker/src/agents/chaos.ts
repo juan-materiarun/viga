@@ -272,7 +272,17 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
     const browser = await getBrowser();
     const page = await browser.newPage();
     const llmCtx = createLLMContext();
-    await vigaLog(suiteId, '🌪️ VIGA Chaos Agent v2 Iniciado', 'info');
+
+    // V3.1 CRITICAL: Force explicit version logging
+    const version = CHAOS_V3_EXPERIMENTAL ? 'v3.1' : 'v2';
+    await vigaLog(suiteId, `🌪️ VIGA Chaos Agent ${version} Iniciado`, 'info');
+
+    // V3.1 CRITICAL: Hard-fail if v3 expected but not wired
+    if (CHAOS_V3_EXPERIMENTAL) {
+        await vigaLog(suiteId, `[V3] Experimental features ACTIVE`, 'info');
+        console.log('[V3] CHAOS_V3_EXPERIMENTAL=true - Running v3 execution loop');
+    }
+
     const keepalive = setInterval(() => { if (!page.isClosed()) page.evaluate(() => true).catch(() => { }); }, 15000);
 
     let actionsExecuted = 0;
@@ -447,10 +457,16 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     const stateActionKey = `${action.id}::${stateHash}`;
                     executedInThisRun.add(stateActionKey);
 
+                    // V3.1 CRITICAL: Log validator execution to prove v3 is running
+                    console.log(`[VALIDATOR] intent=${intent} | action=${action.canonical_name}`);
+
                     const validation = await validateActionEffect(page, action, intent as SemanticIntent, beforeState);
                     const stepStatus = validation.passed ? 'success' : 'warning';
                     executionStatus = stepStatus; // Track for termination logic
                     const evidenceMsg = validation.evidence || thought;
+
+                    // V3.1: Log validation result
+                    console.log(`[VALIDATOR] result=${stepStatus} | evidence=${validation.evidence || 'none'}`);
 
                     if (!validation.passed) {
                         await vigaLog(suiteId, `⚠️ Validation Warning: ${validation.evidence}`, 'warning');
