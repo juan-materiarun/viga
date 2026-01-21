@@ -287,6 +287,13 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
     const globalStateActions = new Set<string>();
     let requiresRescan = false;
     let currentGlobalState: Record<string, string> = {}; // { theme: 'dark', lang: 'es' }
+    const initialGlobalState: Record<string, string> = {}; // V3.1: Track initial state for reversibility
+
+    // V3.1 HOTFIX: Depth-based exploration
+    let currentDepth = 0;
+    const MAX_DEPTH = 3; // Depth 1: basic, 2-3: combinations
+    let newStatesDiscovered = 0;
+    let newEffectsValidated = 0;
 
     try {
         await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -532,60 +539,75 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 continue;
             }
 
-            // 2. COVERAGE COMPLETE - Check for Navigation or Termination
-            await vigaLog(suiteId, `✅ Pantalla cubierta al 100%. Evaluando navegación...`, 'success');
+            // 2. JOURNEY-BASED TERMINATION (V3.1 HOTFIX)
+            // Do NOT terminate just because "coverage = 100%"
+            // Only terminate if no new states, effects, or flows
 
-            if (consecutiveStableStates >= STABILITY_THRESHOLD) {
-                // We are 100% covered and have been stable for N cycles => TRAPPED or DONE
-                await recordStep(suiteId, page, '🏁 Ejecución Finalizada', 'success', `Cobertura completa alcanzada: ${actionsExecuted} pasos. Toda la UI accesible ha sido validada.`, undefined, lastStepId);
+            const hasNewJourneys = (newStatesDiscovered > 0) || (newEffectsValidated > 0) || (currentDepth < MAX_DEPTH);
+
+            if (!hasNewJourneys && consecutiveStableStates >= STABILITY_THRESHOLD) {
+                await vigaLog(suiteId, `✅ Exploración completa: Sin nuevos journeys detectados`, 'success');
+                await recordStep(suiteId, page, '🏁 Ejecución Finalizada', 'success', `Exploración de journeys completa: ${actionsExecuted} pasos, ${newStatesDiscovered} estados, ${newEffectsValidated} efectos validados.`, undefined, lastStepId);
                 break;
             }
 
-            // Try to find ANY link to leave (even if executed, if we are still here, maybe try again or find one that wasn't a "link" role but acts as one)
-            // Note: If untested is 0, we have clicked all links already?
-            // If we are here, it means we clicked them and stayed on page. 
-            // We'll let the stability counter kill it naturally.
-            consecutiveStableStates++;
-            await sleep(1000);
-
-            // Update progress
-            await updateJobProgress(jobId, { current_action: actionsExecuted, max_actions: MAX_ACTIONS });
-        }
-
-        await vigaLog(suiteId, `🏁 Finalizado: ${actionsExecuted} pasos.`, 'success');
-
-        // V3 EXPERIMENTAL: Generate test narrative
-        if (CHAOS_V3_EXPERIMENTAL) {
-            try {
-                const { generateTestNarrative } = await import('../lib/narrative');
-                const { data: steps } = await supabase
-                    .from('test_steps')
-                    .select('id, title, status, expected_result, action_type, created_at')
-                    .eq('suite_id', suiteId)
-                    .order('created_at', { ascending: true });
-
-                if (steps && steps.length > 0) {
-                    const narrative = generateTestNarrative(steps as any[]);
-                    await supabase.from('test_suites').update({
-                        narrative: narrative.full_narrative,
-                        objective: narrative.objective
-                    }).eq('id', suiteId);
-
-                    console.log(`[V3] Test narrative generated: ${narrative.objective}`);
-                }
-            } catch (e: any) {
-                console.warn('[V3] Narrative generation failed:', e.message);
+            // If we have coverage but still have depth budget, continue exploring
+            if (currentDepth < MAX_DEPTH) {
+                await vigaLog(suiteId, `🔍 Cobertura alcanzada, pero explorando profundidad ${currentDepth + 1}/${MAX_DEPTH}...`, 'info');
+                currentDepth++;
+                consecutiveStableStates = 0; // Reset to allow deeper exploration
+                continue;
             }
+
+            await vigaLog(suiteId, `⚠️ Cobertura completa pero sin nuevos journeys. Terminando...`, 'warning');
+            break;
         }
 
-        await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
+        // Try to find ANY link to leave (even if executed, if we are still here, maybe try again or find one that wasn't a "link" role but acts as one)
+        // Note: If untested is 0, we have clicked all links already?
+        // If we are here, it means we clicked them and stayed on page. 
+        // We'll let the stability counter kill it naturally.
+        consecutiveStableStates++;
+        await sleep(1000);
 
-    } catch (e: any) {
-        await vigaLog(suiteId, `🚨 Fatal: ${e.message}`, 'error');
-        await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId);
-    } finally {
-        clearInterval(keepalive);
-        await page.close();
-        await browser.close().catch(() => { });
+        // Update progress
+        await updateJobProgress(jobId, { current_action: actionsExecuted, max_actions: MAX_ACTIONS });
     }
+
+    await vigaLog(suiteId, `🏁 Finalizado: ${actionsExecuted} pasos.`, 'success');
+
+    // V3 EXPERIMENTAL: Generate test narrative
+    if (CHAOS_V3_EXPERIMENTAL) {
+        try {
+            const { generateTestNarrative } = await import('../lib/narrative');
+            const { data: steps } = await supabase
+                .from('test_steps')
+                .select('id, title, status, expected_result, action_type, created_at')
+                .eq('suite_id', suiteId)
+                .order('created_at', { ascending: true });
+
+            if (steps && steps.length > 0) {
+                const narrative = generateTestNarrative(steps as any[]);
+                await supabase.from('test_suites').update({
+                    narrative: narrative.full_narrative,
+                    objective: narrative.objective
+                }).eq('id', suiteId);
+
+                console.log(`[V3] Test narrative generated: ${narrative.objective}`);
+            }
+        } catch (e: any) {
+            console.warn('[V3] Narrative generation failed:', e.message);
+        }
+    }
+
+    await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
+
+} catch (e: any) {
+    await vigaLog(suiteId, `🚨 Fatal: ${e.message}`, 'error');
+    await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId);
+} finally {
+    clearInterval(keepalive);
+    await page.close();
+    await browser.close().catch(() => { });
+}
 }

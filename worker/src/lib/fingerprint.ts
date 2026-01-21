@@ -270,6 +270,20 @@ export function generateCanonicalName(element: UIElement, actionType: 'click' | 
 }
 
 /**
+ * V3.1 HOTFIX: Sanitize labels to prevent HTML/DOM content leakage
+ */
+function sanitizeLabel(label: string | undefined): string {
+    if (!label) return '';
+
+    let clean = label.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+
+    if (clean.length > 50) clean = clean.substring(0, 47) + '...';
+    if (clean.includes('function') || clean.includes('const ') || clean.includes('{')) return '';
+
+    return clean;
+}
+
+/**
  * Extract the best human-readable label for an element.
  */
 function extractBestLabel(element: UIElement): string {
