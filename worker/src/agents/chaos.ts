@@ -347,7 +347,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     }
                 }));
 
-                const { error: upsertError } = await supabase.from('discovered_elements').upsert(upsertBatch, { onConflict: 'suite_id, selector' });
+                const { error: upsertError } = await supabase.from('discovered_elements').upsert(upsertBatch, { onConflict: 'suite_id, url, selector' });
 
                 if (upsertError) {
                     await vigaLog(suiteId, `❌ ERROR guardando discovered_elements: ${upsertError.message}`, 'error');
