@@ -15,6 +15,7 @@ export interface UIElement {
     hint: string;
     selector: string;
     xpath: string;
+    container_context?: string; // V3.1: Track semantic container
     attributes?: {
         type?: string;
         name?: string;
@@ -213,12 +214,44 @@ function normalizeText(text: string): string {
 }
 
 /**
- * Generate a human-readable canonical name for an action using semantic intent.
- * This is what users will see in the test report and UI.
+ * V3.1 HOTFIX: Generate canonical name using REAL semantic intent from context.
+ * DO NOT use button label literally. Infer the actual user journey action.
  */
 export function generateCanonicalName(element: UIElement, actionType: 'click' | 'type'): string {
-    const label = extractBestLabel(element);
+    const rawLabel = extractBestLabel(element);
+    const label = sanitizeLabel(rawLabel);
     const intent = inferIntent(element);
+    const container = element.container_context || detectContainer(element);
+    const hint = (element.hint || '').toLowerCase();
+
+    // V3.1: Context-aware intent (not literal button text)
+
+    // View/Mode Switchers (toolbar/nav buttons)
+    if (hint.includes('código') || hint.includes('code') || label?.toLowerCase().includes('code')) {
+        if (container === 'nav' || hint.includes('tab') || hint.includes('vista')) {
+            return 'Cambiar vista a Editor de Código';
+        }
+    }
+
+    if (hint.includes('sitio') || hint.includes('preview') || hint.includes('web') || label?.toLowerCase().includes('preview')) {
+        if (container === 'nav' || hint.includes('tab')) {
+            return 'Cambiar vista a Preview';
+        }
+    }
+
+    if (hint.includes('diseño') || hint.includes('design') || hint.includes('layout')) {
+        return 'Cambiar vista a Diseño';
+    }
+
+    // Theme/Settings (Global State - must be explicit)
+    if (hint.includes('theme') || hint.includes('tema') || hint.includes('dark') || hint.includes('light')) {
+        const targetTheme = hint.includes('dark') || hint.includes('oscuro') ? 'oscuro' : 'claro';
+        return `Cambiar tema a ${targetTheme}`;
+    }
+
+    if (hint.includes('idioma') || hint.includes('language') || hint.includes('lang')) {
+        return 'Cambiar idioma';
+    }
 
     // Intent-based naming (V3 Phase 2)
     switch (intent) {
