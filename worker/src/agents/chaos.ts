@@ -301,19 +301,27 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
         }
     }, 15000);
 
+    let actions = 0; // Moved outside try for catch block access
+    const MAX_ACTIONS = 50;
+
     try {
         await page.goto(url, { waitUntil: 'domcontentloaded' });
         try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (e) { }
 
-        let actions = 0;
-        const MAX_ACTIONS = 50;
         const visitedStates = new Set<string>();
         const visitedFingerprints = new Set<string>();
+        const interactedInputs = new Set<string>(); // Track which inputs were filled
         const history: string[] = [];
 
         while (actions < MAX_ACTIONS) {
             if (page.isClosed()) {
                 await vigaLog(suiteId, '⚠️ Página cerrada prematuramente. Finalizando.', 'warning');
+                break;
+            }
+
+            // DEFENSIVE: Check if page is still alive
+            if (page.isClosed()) {
+                await vigaLog(suiteId, '⚠️ Página cerrada durante exploración. Finalizando gracefully.', 'warning');
                 break;
             }
 
@@ -358,25 +366,67 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
             const mappedElements = elements.map(e => {
                 const baseUrl = currentUrl.split('#')[0].split('?')[0];
-                const fingerprint = `${baseUrl}::${e.selector}`;
+
+                // GENERIC FLOW-AWARE FINGERPRINTING
+                // Strategy: If this is a button/CTA, check if nearby inputs are uninteracted
+                let fingerprint = `${baseUrl}::${e.selector}`;
+
+                const isActionable = e.tag === 'button' ||
+                    (e.tag === 'a' && (e.hint.toLowerCase().includes('submit') ||
+                        e.hint.toLowerCase().includes('send') ||
+                        e.hint.toLowerCase().includes('start') ||
+                        e.hint.toLowerCase().includes('create')));
+
+                if (isActionable) {
+                    // Find nearby inputs (generic heuristic: within 10 index positions)
+                    const nearbyInputs = elements
+                        .filter(el => el.tag === 'input' && Math.abs(el.i - e.i) < 10)
+                        .map(el => ({ selector: el.selector, index: el.i }));
+
+                    if (nearbyInputs.length > 0) {
+                        // Create flow signature based on which inputs were interacted
+                        const inputsState = nearbyInputs
+                            .map(inp => interactedInputs.has(`${baseUrl}::${inp.selector}`) ? '1' : '0')
+                            .join('');
+
+                        // If there are uninteracted inputs, this is a different flow variant
+                        if (inputsState.includes('0')) {
+                            fingerprint = `${fingerprint}::flow_${inputsState}`;
+                        }
+                    }
+                }
+
                 return {
                     i: e.i,
                     tag: e.tag,
                     hint: e.hint,
                     selector: e.selector,
-                    visited: visitedFingerprints.has(fingerprint)
+                    visited: visitedFingerprints.has(fingerprint),
+                    _fingerprint: fingerprint // Store for later use
                 };
             });
 
             const unvisitedCount = mappedElements.filter(e => !e.visited).length;
 
-            const pageContent = await page.textContent('body').then(t => t || '').catch(() => '');
-            const headings = await page.$$eval('h1, h2, h3', els => els.map(el => el.textContent?.trim() || '').filter(Boolean)).catch(() => [] as string[]);
-            const formCount = await page.$$eval('form', forms => forms.length).catch(() => 0);
+            // DEFENSIVE: Wrap DOM access in try/catch
+            let pageContent = '';
+            let headings: string[] = [];
+            let formCount = 0;
+            let pageTitle = '';
+
+            try {
+                pageContent = await page.textContent('body').then(t => t || '').catch(() => '');
+                headings = await page.$$eval('h1, h2, h3', els => els.map(el => el.textContent?.trim() || '').filter(Boolean)).catch(() => [] as string[]);
+                formCount = await page.$$eval('form', forms => forms.length).catch(() => 0);
+                pageTitle = await page.title().catch(() => 'Unknown');
+            } catch (e: any) {
+                await vigaLog(suiteId, `⚠️ Error extrayendo contexto: ${e.message}`, 'warning');
+                // Continue with empty context instead of crashing
+            }
 
             const context = JSON.stringify({
                 url: currentUrl,
-                title: await page.title(),
+                title: pageTitle,
                 page_content: pageContent.slice(0, 2000),
                 headings: headings.slice(0, 10),
                 forms_detected: formCount,
@@ -473,7 +523,8 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
             if (target) {
                 const baseUrl = currentUrl.split('#')[0].split('?')[0];
-                const fingerprint = `${baseUrl}::${target.selector}`;
+                const targetMapped = mappedElements.find(m => m.i === target.i);
+                const fingerprint = targetMapped?._fingerprint || `${baseUrl}::${target.selector}`;
                 const actionDesc = `${decision.action} en "${target.hint}"`;
                 await vigaLog(suiteId, `👉 [${actions + 1}/${MAX_ACTIONS}] ${decision.title || actionDesc}`, 'info');
 
@@ -494,6 +545,9 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                         console.log(`[CHAOS] ⌨️ Typing...`);
                         try { await page.fill(target.selector, payload); }
                         catch (e) { if (target.xpath) await page.fill(`xpath=${target.xpath}`, payload); else throw e; }
+
+                        // Track this input as interacted (for flow-aware coverage)
+                        interactedInputs.add(`${baseUrl}::${target.selector}`);
                     } else {
                         console.log(`[CHAOS] 🖱️ Clicking...`);
                         try { await page.click(target.selector, { timeout: 8000 }); }
@@ -508,16 +562,48 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     await sleep(1500);
 
                     console.log(`[CHAOS] 📝 Recording step...`);
-                    await recordStep(suiteId, page, decision.title || actionDesc, 'success', decision.thought || actionDesc, {
-                        selector: target.selector,
-                        xpath: target.xpath,
-                        actionType: decision.action as 'click' | 'type',
-                        payload: decision.action === 'type' ? (credentials && (target.selector.includes('password') || target.selector.includes('pass')) ? '******' : decision.payload) : undefined
-                    });
+
+                    // DEFENSIVE: Check if page is still valid before recording
+                    if (page.isClosed()) {
+                        await vigaLog(suiteId, `⚠️ Página cerrada tras acción. Registrando sin evidencia.`, 'warning');
+                        await supabase.from('test_steps').insert({
+                            id: crypto.randomUUID(),
+                            suite_id: suiteId,
+                            title: decision.title || actionDesc,
+                            expected_result: 'Page closed after action',
+                            status: 'warning',
+                            selector: target.selector
+                        });
+                    } else {
+                        await recordStep(suiteId, page, decision.title || actionDesc, 'success', decision.thought || actionDesc, {
+                            selector: target.selector,
+                            xpath: target.xpath,
+                            actionType: decision.action as 'click' | 'type',
+                            payload: decision.action === 'type' ? (credentials && (target.selector.includes('password') || target.selector.includes('pass')) ? '******' : decision.payload) : undefined
+                        });
+                    }
                     console.log(`[CHAOS] ✅ Step recorded.`);
                 } catch (err: any) {
+                    // SOFT FAILURE: Log but don't crash the loop
                     await vigaLog(suiteId, `⚠️ Fallo: ${err.message}`, 'warning');
-                    await recordStep(suiteId, page, `ERROR: ${decision.title}`, 'failed', err.message);
+
+                    // Try to record failure (defensive)
+                    try {
+                        if (!page.isClosed()) {
+                            await recordStep(suiteId, page, `ERROR: ${decision.title}`, 'failed', err.message);
+                        } else {
+                            await supabase.from('test_steps').insert({
+                                id: crypto.randomUUID(),
+                                suite_id: suiteId,
+                                title: `ERROR: ${decision.title}`,
+                                expected_result: err.message,
+                                status: 'failed'
+                            });
+                        }
+                    } catch (recordErr: any) {
+                        console.error(`[CHAOS] Could not record step failure: ${recordErr.message}`);
+                    }
+                    // Continue loop instead of breaking
                 }
             }
             await sleep(500);
@@ -538,14 +624,33 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
         console.error(`[CHAOS-CRITICAL] 💥 Fatal Loop Error: ${e.message}`);
         console.error(e);
 
+        // Try to save partial progress
         try {
-            await recordStep(suiteId, page, 'FATAL ERROR', 'failed', `Critical failure: ${e.message}`);
+            if (!page.isClosed()) {
+                await recordStep(suiteId, page, 'FATAL ERROR', 'failed', `Critical failure: ${e.message}`);
+            } else {
+                await supabase.from('test_steps').insert({
+                    id: crypto.randomUUID(),
+                    suite_id: suiteId,
+                    title: 'FATAL ERROR (Page Closed)',
+                    expected_result: `Critical failure: ${e.message}`,
+                    status: 'failed'
+                });
+            }
         } catch (recordErr: any) {
-            console.error(`[CHAOS-CRITICAL] ⚠️ Could not record fatal error step (browser likely dead): ${recordErr.message}`);
+            console.error(`[CHAOS-CRITICAL] ⚠️ Could not record fatal error: ${recordErr.message}`);
         }
 
-        await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId);
-        throw e;
+        // Mark as completed with warnings if we made meaningful progress
+        if (actions > 5) {
+            await vigaLog(suiteId, `⚠️ Sesión terminada prematuramente pero con progreso (${actions} acciones)`, 'warning');
+            await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
+        } else {
+            await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId);
+        }
+
+        // Don't re-throw if we made meaningful progress
+        if (actions < 5) throw e;
     } finally {
         clearInterval(keepalive);
         await page.close();

@@ -17,7 +17,26 @@ export async function captureEvidence(
     meta: Record<string, any> = {}
 ) {
     console.log(`[EVIDENCE] 📸 Capturando snapshot para ${stepId.slice(0, 4)}...`);
-    const html = await page.content();
+
+    // DEFENSIVE: Check if page is still valid
+    if (page.isClosed()) {
+        console.error(`[EVIDENCE] ⚠️ Page is closed, returning fallback evidence`);
+        return {
+            domHash: 'page-closed',
+            screenshotUrl: '',
+            htmlUrl: '',
+            metaUrl: ''
+        };
+    }
+
+    let html = '';
+    try {
+        html = await page.content();
+    } catch (e: any) {
+        console.error(`[EVIDENCE] ⚠️ page.content() failed: ${e.message}`);
+        html = '<html><body><!-- Page context lost --></body></html>';
+    }
+
     const domHash = crypto.createHash('sha256').update(html).digest('hex');
 
     // Capture only viewport for clarity
