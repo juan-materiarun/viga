@@ -44,12 +44,14 @@ const SIMILARITY_THRESHOLD = 0.75;
 export async function findOrCreateAction(
     element: UIElement,
     pageUrl: string,
-    actionType: 'click' | 'type' = 'click'
+    actionType: 'click' | 'type' = 'click',
+    scanStartTime?: string,
+    usedInThisScan?: Set<string>
 ): Promise<UIAction> {
-    const fingerprint = computeFingerprint(element, pageUrl);
+    let fingerprint = computeFingerprint(element, pageUrl);
     const urlPattern = normalizeUrl(pageUrl);
 
-    // 1. Try exact fingerprint match
+    // 1. Try exact fingerprint match (Always global)
     const { data: exactMatch } = await supabase
         .from('ui_actions')
         .select('*')
@@ -57,21 +59,38 @@ export async function findOrCreateAction(
         .single();
 
     if (exactMatch) {
-        // Update last_seen and selectors
-        await updateActionSelectors(exactMatch.id, element);
-        return exactMatch as UIAction;
+        // CRITICAL FIX: Even exact matches must respect 1:1 scan uniqueness
+        if (!usedInThisScan?.has(exactMatch.id)) {
+            await updateActionSelectors(exactMatch.id, element);
+            return exactMatch as UIAction;
+        }
+        console.log(`[ACTIONS] Exact match ${exactMatch.id} already used in this scan. Forcing new variant.`);
     }
 
     // 2. Try fuzzy match by URL + role + similarity score
+    // CRITICAL FIX: Only match against actions established BEFORE this scan cycle.
+    // This prevents "snowballing" where distinct elements on the same page collapse into the first created action.
     const role = element.attributes?.role || inferRoleSimple(element);
-    const { data: candidates } = await supabase
+    let query = supabase
         .from('ui_actions')
         .select('*')
         .eq('url_pattern', urlPattern)
         .eq('tag', element.tag.toLowerCase());
 
+    if (scanStartTime) {
+        query = query.lt('first_seen_at', scanStartTime);
+    }
+
+    const { data: candidates } = await query;
+
     if (candidates && candidates.length > 0) {
         for (const candidate of candidates) {
+            // COLLISION CHECK: If this candidate ID is already used in this scan, SKIP IT.
+            // This forces creation of a new action for the second/third/etc element.
+            if (usedInThisScan?.has(candidate.id)) {
+                continue;
+            }
+
             const similarity = computeSimilarity(candidate, element, pageUrl);
             if (similarity >= SIMILARITY_THRESHOLD) {
                 console.log(`[ACTIONS] Matched existing action (score: ${(similarity * 100).toFixed(0)}%): ${candidate.canonical_name}`);
@@ -81,47 +100,66 @@ export async function findOrCreateAction(
         }
     }
 
-    // 3. No match found - create new action
-    const canonicalName = generateCanonicalName(element, actionType);
-    const newAction: Partial<UIAction> = {
-        fingerprint,
-        role,
-        aria_label: element.attributes?.['aria-label'] || element.hint?.split('|')[0]?.trim() || '',
-        aria_pressed: element.attributes?.['aria-pressed'] || null,
-        input_type: element.attributes?.type || '',
-        tag: element.tag.toLowerCase(),
-        url_pattern: urlPattern,
-        container_context: detectContainer(element),
-        canonical_name: canonicalName,
-        selectors: [
-            { type: 'css', value: element.selector },
-            ...(element.xpath ? [{ type: 'xpath', value: element.xpath }] : [])
-        ],
-        execution_count: 0
-    };
+    // 3. No match found (or all matches matched already-used IDs) -> Create new action
+    const baseCanonicalName = generateCanonicalName(element, actionType);
+    let attempt = 0;
+    while (attempt < 5) {
+        const suffix = attempt > 0 ? ` #${attempt + 1}` : '';
+        const variantFingerprint = attempt > 0 ? `${fingerprint}_v${attempt}` : fingerprint;
 
-    const { data: created, error } = await supabase
-        .from('ui_actions')
-        .insert(newAction)
-        .select()
-        .single();
+        const newAction: Partial<UIAction> = {
+            fingerprint: variantFingerprint,
+            role,
+            aria_label: element.attributes?.['aria-label'] || element.hint?.split('|')[0]?.trim() || '',
+            aria_pressed: element.attributes?.['aria-pressed'] || null,
+            input_type: element.attributes?.type || '',
+            tag: element.tag.toLowerCase(),
+            url_pattern: urlPattern,
+            container_context: detectContainer(element),
+            canonical_name: `${baseCanonicalName}${suffix}`,
+            selectors: [
+                { type: 'css', value: element.selector },
+                ...(element.xpath ? [{ type: 'xpath', value: element.xpath }] : [])
+            ],
+            execution_count: 0
+        };
 
-    if (error) {
-        // Handle race condition: might have been created by another process
+        const { data: created, error } = await supabase
+            .from('ui_actions')
+            .insert(newAction)
+            .select()
+            .single();
+
+        if (!error) {
+            console.log(`[ACTIONS] Created new action: ${newAction.canonical_name}`);
+            return created as UIAction;
+        }
+
+        // Handle collision
         if (error.code === '23505') { // Unique violation
+            // Check if it's the fingerprint that collided
             const { data: existing } = await supabase
                 .from('ui_actions')
                 .select('*')
-                .eq('fingerprint', fingerprint)
+                .eq('fingerprint', variantFingerprint)
                 .single();
-            if (existing) return existing as UIAction;
+
+            if (existing) {
+                // If it exists AND is not used, take it
+                if (!usedInThisScan?.has(existing.id)) {
+                    return existing as UIAction;
+                }
+                // If used, try next variant
+                attempt++;
+                continue;
+            }
         }
+
         console.error('[ACTIONS] Failed to create action:', error);
         throw error;
     }
 
-    console.log(`[ACTIONS] Created new action: ${canonicalName}`);
-    return created as UIAction;
+    throw new Error(`Failed to find unique action slot after 5 attempts for ${baseCanonicalName}`);
 }
 
 /**

@@ -290,20 +290,46 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             if (stateHash === lastStateHash) consecutiveStableStates++;
             else { consecutiveStableStates = 0; lastStateHash = stateHash; }
 
+            // NEW: Capture scan start time to prevent self-matching in this cycle
+            const scanStartTime = new Date().toISOString();
+
             const untested: { element: UIElement; action: UIAction }[] = [];
+            const actionIdsOnScreen = new Set<string>();
+
             for (const el of elements) {
-                const action = await findOrCreateAction(el, currentUrl, getActionType(el));
+                // Pass scanStartTime to prevent fuzzy matching against actions created within this loop
+                // Pass actionIdsOnScreen to prevent mapping multiple elements to the same action ID in the same scan
+                const action = await findOrCreateAction(el, currentUrl, getActionType(el), scanStartTime, actionIdsOnScreen);
+
+                // DIAGNOSTIC LOG (Requested by USER)
+                const fingerprint = computeFingerprint(el, currentUrl);
+                console.log(`[SCAN-DEBUG] fingerprint=${fingerprint} assigned_action_id=${action.id}`);
+
+                actionIdsOnScreen.add(action.id);
+
                 const key = `${action.id}::${stateHash}`;
-                // Check local run cache AND database strict persistence
-                if (!executedInThisRun.has(key) && !(await hasActionBeenExecuted(suiteId, action.id, stateHash))) {
+
+                // INVARIANT 1: Runtime Set Check (Cyclical loop prevention)
+                const executedInRuntime = executedInThisRun.has(key);
+
+                // INVARIANT 2: Database Persistence Check (State persistence)
+                const executedInDB = await hasActionBeenExecuted(suiteId, action.id, stateHash);
+
+                if (!executedInRuntime && !executedInDB) {
                     untested.push({ element: el, action });
+                } else {
+                    // Ensure runtime set is in sync with DB if we found it in DB
+                    if (executedInDB) executedInThisRun.add(key);
                 }
             }
 
-            // SCREEN COVERAGE AUDIT
-            const totalActions = elements.length;
-            const coveredActions = totalActions - untested.length;
-            await vigaLog(suiteId, `📊 Cobertura de Pantalla: ${coveredActions}/${totalActions} presuntamente ejecutadas.`, 'info');
+            // INVARIANT 3: Coverage calculation from TRUTH (DB/Runtime), not inference
+            const totalActions = elements.length; // Approximate, assuming 1:1 mapping ideally
+            const reallyExecutedCount = Array.from(actionIdsOnScreen).filter(id =>
+                executedInThisRun.has(`${id}::${stateHash}`)
+            ).length;
+
+            await vigaLog(suiteId, `📊 Cobertura Real (Invariante): ${reallyExecutedCount}/${actionIdsOnScreen.size} acciones únicas.`, 'info');
 
             // 1. STRICT RULE: Cannot leave if unseen actions exist
             if (untested.length > 0) {
