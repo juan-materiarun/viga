@@ -213,81 +213,52 @@ function normalizeText(text: string): string {
     return (text || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-/**
- * V3.1 HOTFIX: Generate canonical name using REAL semantic intent from context.
- * DO NOT use button label literally. Infer the actual user journey action.
- */
 export function generateCanonicalName(element: UIElement, actionType: 'click' | 'type'): string {
     const rawLabel = extractBestLabel(element);
     const label = sanitizeLabel(rawLabel);
     const intent = inferIntent(element);
+    const role = element.attributes?.role || inferRole(element);
     const container = element.container_context || detectContainer(element);
     const hint = (element.hint || '').toLowerCase();
 
-    // V3.1: Context-aware intent (not literal button text)
+    // V3.2: Context-aware naming (Priority: Semantic Journeys)
 
-    // View/Mode Switchers (toolbar/nav buttons)
-    if (hint.includes('código') || hint.includes('code') || label?.toLowerCase().includes('code')) {
-        if (container === 'nav' || hint.includes('tab') || hint.includes('vista')) {
-            return 'Cambiar vista a Editor de Código';
-        }
+    // Tabs & View Switchers
+    if (role === 'tab' || hint.includes('tab') || container === 'navigation' || container === 'header') {
+        if (hint.includes('código') || label.toLowerCase().includes('code')) return 'Cambiar vista a Editor de Código';
+        if (hint.includes('sitio') || hint.includes('preview') || label.toLowerCase().includes('preview')) return 'Cambiar vista a Preview';
+        if (label) return `Cambiar a pestaña "${label}"`;
     }
 
-    if (hint.includes('sitio') || hint.includes('preview') || hint.includes('web') || label?.toLowerCase().includes('preview')) {
-        if (container === 'nav' || hint.includes('tab')) {
-            return 'Cambiar vista a Preview';
-        }
-    }
-
-    if (hint.includes('diseño') || hint.includes('design') || hint.includes('layout')) {
-        return 'Cambiar vista a Diseño';
-    }
-
-    // Theme/Settings (Global State - must be explicit)
+    // Global Settings
     if (hint.includes('theme') || hint.includes('tema') || hint.includes('dark') || hint.includes('light')) {
-        const targetTheme = hint.includes('dark') || hint.includes('oscuro') ? 'oscuro' : 'claro';
-        return `Cambiar tema a ${targetTheme}`;
+        const isDark = hint.includes('dark') || hint.includes('oscuro');
+        return `Cambiar tema a ${isDark ? 'oscuro' : 'claro'}`;
     }
 
-    if (hint.includes('idioma') || hint.includes('language') || hint.includes('lang')) {
-        return 'Cambiar idioma';
-    }
-
-    // Intent-based naming (V3 Phase 2)
+    // Intent-based naming
     switch (intent) {
-        case 'DOWNLOAD':
-            return `Descargar "${label || 'archivo'}"`;
-        case 'EXPORT':
-            return `Exportar "${label || 'datos'}"`;
-        case 'NAVIGATION':
-            return `Navegar a "${label || 'sección'}"`;
-        case 'SUBMIT':
-            return `Enviar formulario "${label || 'principal'}"`;
-        case 'TOGGLE':
-            return `Alternar "${label || 'opción'}"`;
+        case 'DOWNLOAD': return `Descargar ${label || 'archivo'}`;
+        case 'EXPORT': return `Exportar ${label || 'datos'}`;
+        case 'SUBMIT': return `Enviar ${container === 'form' ? 'formulario' : 'datos'}`;
+        case 'TOGGLE': return `Alternar "${label || 'opción'}"`;
         case 'INPUT':
-            return `Completar campo "${label || 'texto'}"`;
+            if (label && label.length < 50) return `Completar campo "${label}"`;
+            return `Escribir en campo de ${element.attributes?.type || 'texto'}`;
     }
 
-    // Fallback to role-based naming if intent is generic ACTION/UNKNOWN
-    const role = element.attributes?.role || inferRole(element);
+    // Fallback: Action Verbs
     const actionVerbs: Record<string, Record<string, string>> = {
         click: {
-            'checkbox': 'Marcar/Desmarcar',
-            'radio': 'Seleccionar',
             'submit-button': 'Enviar',
             'close-button': 'Cerrar',
             'button': 'Activar',
             'link': 'Ir a',
-            'dropdown': 'Abrir',
             'default': 'Interactuar con'
         },
         type: {
-            'password-input': 'Ingresar contraseña en',
-            'email-input': 'Ingresar email en',
-            'search-input': 'Buscar',
-            'text-input': 'Escribir en',
-            'textarea': 'Escribir en',
+            'password-input': 'Ingresar contraseña',
+            'email-input': 'Ingresar email',
             'default': 'Escribir en'
         }
     };
@@ -295,24 +266,20 @@ export function generateCanonicalName(element: UIElement, actionType: 'click' | 
     const verbs = actionVerbs[actionType] || actionVerbs.click;
     const verb = verbs[role] || verbs.default;
 
-    if (label) {
-        return `${verb} "${label}"`;
-    } else {
-        return `${verb} elemento ${role}`;
-    }
+    if (label && label.length > 0) return `${verb} "${label}"`;
+    return `${verb} elemento ${role}`;
 }
 
 /**
- * V3.1 HOTFIX: Sanitize labels to prevent HTML/DOM content leakage
+ * V3.2 HOTFIX: Aggressive sanitization to prevent ANY HTML/DOM leakage
  */
 function sanitizeLabel(label: string | undefined): string {
     if (!label) return '';
-
-    let clean = label.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-
+    // Strip anything between < and >, plus stray angle brackets
+    let clean = label.replace(/<.*?>/g, '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
     if (clean.length > 50) clean = clean.substring(0, 47) + '...';
-    if (clean.includes('function') || clean.includes('const ') || clean.includes('{')) return '';
-
+    // Reject common code patterns
+    if (clean.includes('{') || clean.includes('}') || clean.includes('function') || clean.includes('const ')) return '';
     return clean;
 }
 

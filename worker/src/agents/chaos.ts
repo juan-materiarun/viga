@@ -430,14 +430,16 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 if (!selected) {
                     // Fallback: Pick top heuristic
                     selected = sortedUntested[0];
-                    if (getActionType(selected.element) === 'type') {
-                        // Simple payload for now, or use generatePayload if critical
-                        payload = 'test-input';
-                    }
                 }
 
                 const { element, action } = selected;
                 const actionType = getActionType(element);
+
+                // V3.2: Use sanitized payload generator
+                if (actionType === 'type') {
+                    payload = generatePayload(element, credentials);
+                }
+
                 const stepTitle = action.canonical_name;
                 const intent = action.metadata?.semantic_intent || 'UNKNOWN';
 
@@ -468,11 +470,9 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     // V3.1: Log validation result
                     console.log(`[VALIDATOR] result=${stepStatus} | evidence=${validation.evidence || 'none'}`);
 
-                    // V3.1 CRITICAL: Regenerate canonical_name with full context after validation
-                    // Problem: Names are frozen at creation time, missing role=tab, observed effects
-                    // Solution: Regenerate with complete context and update if more specific
+                    // V3.2 CRITICAL: Regenerate canonical_name ALWAYS if different
                     const regeneratedName = generateCanonicalName(element, actionType);
-                    if (regeneratedName !== action.canonical_name && !regeneratedName.startsWith('Activar')) {
+                    if (regeneratedName !== action.canonical_name) {
                         console.log(`[RENAME] ${action.canonical_name} → ${regeneratedName}`);
                         await supabase.from('ui_actions')
                             .update({ canonical_name: regeneratedName })
@@ -551,8 +551,8 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     stepsWithoutValue++;
                 }
 
-                if (!CHAOS_REPLAY_MODE && stepsWithoutValue >= 5) {
-                    await vigaLog(suiteId, '🛑 Smart Termination: Diminishing Returns (Sin valor en últimos 5 pasos)', 'info');
+                if (!CHAOS_REPLAY_MODE && stepsWithoutValue >= 10) {
+                    await vigaLog(suiteId, '🛑 Smart Termination: Diminishing Returns (Sin valor en últimos 10 pasos)', 'info');
                     break;
                 }
 
