@@ -319,7 +319,7 @@ function classifyElementDeterministically(el: UIElement): number {
     if (tag === 'a' && hint.length > 0 && !hint.match(/logout|salir|delete|eliminar/)) return 5;
 
     // Low
-    return 1;
+    return 0; // Safe default: only allowed whitelisted actions (none by default now)
 }
 
 // NEW: Detect if action is reversible (toggle/switch)
@@ -347,10 +347,13 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
     }, 15000);
 
     let actions = 0; // Moved outside try for catch block access
-    const MAX_ACTIONS = 50;
+    let llmCalls = 0;
+    const MAX_ACTIONS = 20;
+    const MAX_LLM_CALLS = 15;
 
     // NEW: Track parent step for tree structure
     let lastStepId: string | undefined;
+    let lastStateHash: string = '';
 
     try {
         await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -359,7 +362,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
         const visitedStates = new Set<string>();
         const visitedFingerprints = new Set<string>();
         const interactedInputs = new Set<string>(); // Track which inputs were filled
-        const actionHistory = new Map<string, number>(); // Anti-loop: fingerprint -> execution count
+        const actionHistory = new Map<string, number>(); // State+Action -> count
         const history: string[] = [];
 
         while (actions < MAX_ACTIONS) {
@@ -509,67 +512,48 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 elements_found: elements.length
             });
 
-            // --- WARMUP PHASE ---
+            // --- WARMUP PHASE (Ultra-Safe) ---
             if (actions < WARMUP_ACTIONS) {
-                await vigaLog(suiteId, `🏃 WARMUP MODE (${actions + 1}/${WARMUP_ACTIONS})`, 'info');
+                await vigaLog(suiteId, `🏃 WARMUP MODE: Passive Scroll`, 'info');
 
-                const scoredElements = mappedElements
-                    .filter(e => !e.visited)
-                    .map(e => {
-                        const original = elements.find(el => el.i === e.i);
-                        return { ...e, score: original ? classifyElementDeterministically(original) : 0 };
-                    })
-                    .sort((a, b) => b.score - a.score);
+                try {
+                    // Safe Passive Action: Scroll
+                    await page.mouse.wheel(0, 500);
+                    await sleep(1000);
 
-                if (scoredElements.length > 0 && scoredElements[0].score > 1) {
-                    const topCandidate = scoredElements[0];
-                    const target = elements.find(el => el.i === topCandidate.i)!;
+                    // Record generic safe step WITHOUT an element selector
+                    const newStepId = await recordStep(suiteId, page, 'WARMUP: Passive Scroll', 'success', 'Desplazamiento inicial seguro para cargar contenido.', {
+                        actionType: 'navigate' as any
+                    }, lastStepId);
 
-                    const actionType = target.tag === 'input' ? 'type' : 'click';
-                    const actionDesc = `[HEURÍSTICO] ${actionType.toUpperCase()} en ${target.hint}`;
-
-                    await vigaLog(suiteId, `👉 ${actionDesc} (Score: ${topCandidate.score})`, 'info');
-
-                    const baseUrl = currentUrl.split('#')[0].split('?')[0];
-                    const fingerprint = `${baseUrl}::${target.selector}`;
-                    visitedFingerprints.add(fingerprint);
-
-                    try {
-                        if (actionType === 'type') {
-                            let payload = 'test@qa.com';
-                            if (target.selector.includes('password') || target.selector.includes('pass')) {
-                                payload = credentials?.password || 'Password123!';
-                            } else if (credentials?.username && (target.selector.includes('user') || target.selector.includes('email'))) {
-                                payload = credentials.username || 'test_user';
-                            }
-                            await page.fill(target.selector, payload);
-                        } else {
-                            try { await page.click(target.selector, { timeout: 5000 }); }
-                            catch (e) { if (target.xpath) await page.click(`xpath=${target.xpath}`, { timeout: 5000 }); else throw e; }
-                        }
-
-                        actions++;
-                        await sleep(1000);
-
-                        const newStepId = await recordStep(suiteId, page, actionDesc, 'success', `Acción determinística (Score ${topCandidate.score})`, {
-                            selector: target.selector,
-                            xpath: target.xpath,
-                            actionType: actionType as any
-                        }, lastStepId);
-
-                        // If recordStep succeeded, update lastStepId for next iteration (Tree)
-                        if (newStepId) lastStepId = newStepId;
-
-                        continue;
-                    } catch (err: any) {
-                        await vigaLog(suiteId, `⚠️ Fallo heurístico: ${err.message}`, 'warning');
-                    }
-                } else {
-                    await vigaLog(suiteId, `ℹ️ Warmup skippeado: sin candidatos claros`, 'info');
+                    if (newStepId) lastStepId = newStepId;
+                    actions++;
+                    continue;
+                } catch (err: any) {
+                    await vigaLog(suiteId, `⚠️ Warmup failed: ${err.message}`, 'warning');
                 }
             }
 
+            // KILL-SWITCH: Check if DOM changed (Optimized)
+            // We use elements.length and URL hash as rough proxy, plus maybe pageContent hash?
+            // "stateHash" defined above uses (currentUrl + elements.length).
+            // If strict hash equal AND we are past warmup, pause LLM.
 
+            if (stateHash === lastStateHash && actions > WARMUP_ACTIONS) {
+                await vigaLog(suiteId, `🛑 Kill-switch: DOM sin cambios. Deteniendo LLM para ahorrar.`, 'warning');
+                await recordStep(suiteId, page, 'OPTIMIZACIÓN: DOM ESTÁTICO', 'success', 'El DOM no cambió tras la última acción. Se detiene el análisis para evitar costos y loops.', undefined, lastStepId);
+                break;
+            }
+            lastStateHash = stateHash;
+
+            // BUDGET CHECK
+            if (llmCalls >= MAX_LLM_CALLS) {
+                await vigaLog(suiteId, `💰 Run Budget Reached (${MAX_LLM_CALLS}). Finishing.`, 'warning');
+                await recordStep(suiteId, page, 'BUDGET LISTO', 'success', `Se alcanzó el límite de ${MAX_LLM_CALLS} llamadas al LLM.`, undefined, lastStepId);
+                break;
+            }
+
+            llmCalls++;
             const decision = await callGroqJSON(llmCtx, CHAOS_SYSTEM, context);
 
             if (!decision) { break; }
@@ -593,18 +577,19 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                 history.push(`${decision.title}: ${decision.thought}`);
 
-                // ANTI-LOOP: Check if this is a reversible action already executed
-                const isReversible = isReversibleAction(target);
-                const executionCount = actionHistory.get(fingerprint) || 0;
+                // ANTI-LOOP: Check if this is a reversible action already executed IN THIS STATE
+                // We use (stateHash + fingerprint) to block repetitions in the same context
+                const stateActionKey = `${stateHash}::${fingerprint}`;
+                const executionCount = actionHistory.get(stateActionKey) || 0;
 
-                if (isReversible && executionCount >= 1) {
-                    await vigaLog(suiteId, `⚠️ Toggle/Switch ya ejecutado (${executionCount}x). Skipping para evitar loop.`, 'warning');
+                if (executionCount >= 1) {
+                    await vigaLog(suiteId, `🔁 Acción repetida en mismo estado (${executionCount}x). Skipping para evitar loop.`, 'warning');
                     visitedFingerprints.add(fingerprint);
-                    continue; // Skip execution, mark as visited
+                    continue;
                 }
 
                 visitedFingerprints.add(fingerprint);
-                actionHistory.set(fingerprint, executionCount + 1);
+                actionHistory.set(stateActionKey, executionCount + 1);
                 await vigaLog(suiteId, `🔖 Marcado como visitado: ${fingerprint.slice(0, 80)}...`, 'info');
 
                 try {
