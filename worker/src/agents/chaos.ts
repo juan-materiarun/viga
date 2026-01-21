@@ -132,7 +132,7 @@ type UIElement = {
 async function getActiveElements(page: any): Promise<UIElement[]> {
     await injectScripts(page);
     return await page.evaluate(() => {
-        return Array.from(document.querySelectorAll('a, button, input, select, textarea, [role="button"], [tabindex="0"]'))
+        return Array.from(document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="tab"], [role="radio"], [tabindex="0"]'))
             .map((e, i) => {
                 const el = e as HTMLElement;
                 const r = el.getBoundingClientRect();
@@ -144,6 +144,8 @@ async function getActiveElements(page: any): Promise<UIElement[]> {
                 const name = el.getAttribute('name') || '';
                 const role = el.getAttribute('role') || '';
                 const type = el.getAttribute('type') || '';
+                const ariaSelected = el.getAttribute('aria-selected') || '';
+                const checked = (el as HTMLInputElement).checked || false;
 
                 let labelText = '';
                 if (el.id) {
@@ -166,7 +168,20 @@ async function getActiveElements(page: any): Promise<UIElement[]> {
                 const cleanText = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 100);
                 const hint = [labelText, placeholder, aria, name, role, cleanText].filter(Boolean).join(' | ');
 
-                return { i, tag: el.tagName.toLowerCase(), text: cleanText, hint: hint, selector, xpath, attributes: { type, name, id: el.id } };
+                // Detect if this is a branch element (tab, toggle, radio)
+                const isBranchElement = role === 'tab' || role === 'radio' || type === 'radio' || type === 'checkbox' ||
+                    (role === 'button' && (aria.toLowerCase().includes('tab') || cleanText.toLowerCase().match(/tab|toggle|switch/)));
+
+                return {
+                    i,
+                    tag: el.tagName.toLowerCase(),
+                    text: cleanText,
+                    hint: hint,
+                    selector,
+                    xpath,
+                    attributes: { type, name, id: el.id, role, ariaSelected, checked },
+                    isBranchElement // NEW: flag for branch detection
+                };
             })
             .filter(Boolean) as UIElement[];
     });
@@ -258,6 +273,7 @@ REGLAS CRÍTICAS:
 2. Si TODOS los elementos tienen "visited": true -> Action: "finish".
 3. PRIORIDAD MÁXIMA: No saltes pasos. Si hay botones funcionales en la pantalla actual, clickéalos primero.
 4. Si detectas un cambio de tab/pestaña, asume que es una vista nueva y resetea tu curiosidad exploratoria.
+5. **BRANCH PRIORITIZATION**: Si recibes "should_prioritize_branches": true en stats, DEBES priorizar elementos que sean tabs, toggles, radios o switches sin interactuar. Estos revelan flujos alternativos críticos que aún no has explorado.
 
 Responde JSON:
 {
@@ -311,6 +327,9 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
         const visitedStates = new Set<string>();
         const visitedFingerprints = new Set<string>();
         const interactedInputs = new Set<string>(); // Track which inputs were filled
+        const interactedBranches = new Set<string>(); // Track which branches (tabs/toggles) were activated
+        let actionsSinceLastBranchSwitch = 0; // Counter for drift detection
+        const BRANCH_DRIFT_THRESHOLD = 8; // Max actions before forcing branch exploration
         const history: string[] = [];
 
         while (actions < MAX_ACTIONS) {
@@ -408,6 +427,20 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
             const unvisitedCount = mappedElements.filter(e => !e.visited).length;
 
+            // BRANCH DRIFT DETECTION: Check if we should prioritize unexplored branches
+            const branchElements = elements.filter(e => (e as any).isBranchElement);
+            const uninteractedBranches = branchElements.filter(e => {
+                const baseUrl = currentUrl.split('#')[0].split('?')[0];
+                const branchKey = `${baseUrl}::${e.selector}`;
+                return !interactedBranches.has(branchKey);
+            });
+
+            const shouldPrioritizeBranches = actionsSinceLastBranchSwitch >= BRANCH_DRIFT_THRESHOLD && uninteractedBranches.length > 0;
+
+            if (shouldPrioritizeBranches) {
+                await vigaLog(suiteId, `🔀 Branch drift detected (${actionsSinceLastBranchSwitch} actions). Priorizando ${uninteractedBranches.length} branches sin explorar.`, 'info');
+            }
+
             // DEFENSIVE: Wrap DOM access in try/catch
             let pageContent = '';
             let headings: string[] = [];
@@ -432,7 +465,12 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 forms_detected: formCount,
                 history: history.slice(-15),
                 interactive_elements: mappedElements,
-                stats: { unvisited_elements: unvisitedCount, total_elements: mappedElements.length },
+                stats: {
+                    unvisited_elements: unvisitedCount,
+                    total_elements: mappedElements.length,
+                    uninteracted_branches: uninteractedBranches.length,
+                    should_prioritize_branches: shouldPrioritizeBranches
+                },
                 credentials_vault: credentials ? "AVAILABLE (Use these for login forms if needed)" : "NONE",
                 available_credentials: credentials
             });
@@ -550,6 +588,16 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                         interactedInputs.add(`${baseUrl}::${target.selector}`);
                     } else {
                         console.log(`[CHAOS] 🖱️ Clicking...`);
+
+                        // Track if this is a branch element (tab, toggle, radio)
+                        if ((target as any).isBranchElement) {
+                            const branchKey = `${baseUrl}::${target.selector}`;
+                            interactedBranches.add(branchKey);
+                            actionsSinceLastBranchSwitch = 0; // Reset drift counter
+                            await vigaLog(suiteId, `🔀 Branch activado: ${target.hint.slice(0, 50)}`, 'info');
+                        } else {
+                            actionsSinceLastBranchSwitch++; // Increment drift counter
+                        }
                         try { await page.click(target.selector, { timeout: 8000 }); }
                         catch (e) {
                             console.log(`[CHAOS] ⚠️ Standard click failed, trying XPath...`);
