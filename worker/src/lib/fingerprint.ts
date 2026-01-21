@@ -1,0 +1,276 @@
+/**
+ * Semantic Action Fingerprinting Library
+ * 
+ * This module provides utilities to create stable, semantic fingerprints
+ * for UI actions. Fingerprints are used to identify the same action
+ * across different runs, even if selectors change.
+ */
+
+import crypto from 'crypto';
+
+export interface UIElement {
+    i: number;
+    tag: string;
+    text: string;
+    hint: string;
+    selector: string;
+    xpath: string;
+    attributes?: {
+        type?: string;
+        name?: string;
+        id?: string;
+        role?: string;
+        ariaSelected?: string;
+        checked?: boolean;
+        'aria-label'?: string;
+        'aria-pressed'?: string;
+        placeholder?: string;
+    };
+}
+
+export interface ActionFingerprint {
+    role: string;
+    ariaLabel: string;
+    inputType: string;
+    tag: string;
+    urlPattern: string;
+    containerContext: string;
+    textHint: string; // First 30 chars of visible text
+}
+
+/**
+ * Compute a stable fingerprint for a UI element based on semantic properties.
+ * This fingerprint should remain stable even if CSS classes or structure changes.
+ */
+export function computeFingerprint(element: UIElement, pageUrl: string): string {
+    const fp: ActionFingerprint = {
+        role: element.attributes?.role || inferRole(element),
+        ariaLabel: normalizeText(element.attributes?.['aria-label'] || ''),
+        inputType: element.attributes?.type || '',
+        tag: element.tag.toLowerCase(),
+        urlPattern: normalizeUrl(pageUrl),
+        containerContext: detectContainer(element),
+        textHint: normalizeText(element.hint?.split('|')[0] || element.text || '').slice(0, 30)
+    };
+
+    // Create deterministic hash
+    const normalized = JSON.stringify(fp, Object.keys(fp).sort());
+    return crypto.createHash('md5').update(normalized).digest('hex');
+}
+
+/**
+ * Normalize URL by removing query params, hash, and trailing slashes.
+ * This groups actions from the same page together.
+ */
+export function normalizeUrl(url: string): string {
+    try {
+        const u = new URL(url);
+        // Keep only origin + pathname, remove trailing slash
+        return `${u.origin}${u.pathname}`.replace(/\/$/, '');
+    } catch {
+        return url;
+    }
+}
+
+/**
+ * Detect the semantic container of an element (header, nav, form, modal, footer).
+ * This helps differentiate similar elements in different contexts.
+ */
+export function detectContainer(element: UIElement): string {
+    const sel = (element.selector || '').toLowerCase();
+    const hint = (element.hint || '').toLowerCase();
+
+    if (sel.includes('header') || sel.includes('navbar') || hint.includes('header')) return 'header';
+    if (sel.includes('nav') || sel.includes('menu') || hint.includes('navigation')) return 'navigation';
+    if (sel.includes('form') || sel.includes('login') || sel.includes('signup')) return 'form';
+    if (sel.includes('modal') || sel.includes('dialog') || sel.includes('popup')) return 'modal';
+    if (sel.includes('footer')) return 'footer';
+    if (sel.includes('sidebar') || sel.includes('aside')) return 'sidebar';
+
+    return 'main';
+}
+
+/**
+ * Infer semantic role from element tag and attributes.
+ */
+function inferRole(element: UIElement): string {
+    const tag = element.tag.toLowerCase();
+    const type = element.attributes?.type || '';
+    const hint = (element.hint || '').toLowerCase();
+
+    // Input types
+    if (tag === 'input') {
+        if (type === 'checkbox') return 'checkbox';
+        if (type === 'radio') return 'radio';
+        if (type === 'submit') return 'submit-button';
+        if (type === 'password') return 'password-input';
+        if (type === 'email') return 'email-input';
+        if (type === 'search') return 'search-input';
+        return 'text-input';
+    }
+
+    if (tag === 'button') {
+        if (hint.includes('toggle') || hint.includes('switch') || hint.includes('theme')) return 'toggle';
+        if (hint.includes('submit') || hint.includes('enviar') || hint.includes('send')) return 'submit-button';
+        if (hint.includes('close') || hint.includes('cerrar') || hint.includes('cancel')) return 'close-button';
+        return 'button';
+    }
+
+    if (tag === 'a') return 'link';
+    if (tag === 'select') return 'dropdown';
+    if (tag === 'textarea') return 'textarea';
+
+    return tag;
+}
+
+/**
+ * Normalize text for comparison: lowercase, trim, collapse whitespace.
+ */
+function normalizeText(text: string): string {
+    return (text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Generate a human-readable canonical name for an action.
+ * This is what users will see in the test report.
+ */
+export function generateCanonicalName(element: UIElement, actionType: 'click' | 'type'): string {
+    const role = element.attributes?.role || inferRole(element);
+    const label = extractBestLabel(element);
+
+    const actionVerbs: Record<string, Record<string, string>> = {
+        click: {
+            'toggle': 'Alternar',
+            'checkbox': 'Marcar/Desmarcar',
+            'radio': 'Seleccionar opción',
+            'submit-button': 'Enviar formulario',
+            'close-button': 'Cerrar',
+            'button': 'Activar',
+            'link': 'Navegar a',
+            'dropdown': 'Abrir selector',
+            'default': 'Interactuar con'
+        },
+        type: {
+            'password-input': 'Ingresar contraseña en',
+            'email-input': 'Ingresar email en',
+            'search-input': 'Buscar en',
+            'text-input': 'Completar campo',
+            'textarea': 'Escribir en',
+            'default': 'Escribir en'
+        }
+    };
+
+    const verbs = actionVerbs[actionType] || actionVerbs.click;
+    const verb = verbs[role] || verbs.default;
+
+    // Construct readable name
+    if (label) {
+        return `${verb} "${label}"`;
+    } else {
+        return `${verb} elemento ${role}`;
+    }
+}
+
+/**
+ * Extract the best human-readable label for an element.
+ */
+function extractBestLabel(element: UIElement): string {
+    // Priority: aria-label > placeholder > visible text > name > id
+    const ariaLabel = element.attributes?.['aria-label'];
+    if (ariaLabel && ariaLabel.length > 2) return ariaLabel.slice(0, 40);
+
+    const placeholder = element.attributes?.placeholder;
+    if (placeholder && placeholder.length > 2) return placeholder.slice(0, 40);
+
+    // From hint (first part before |)
+    const hintPart = element.hint?.split('|')[0]?.trim();
+    if (hintPart && hintPart.length > 2 && hintPart.length < 50) return hintPart;
+
+    // Visible text
+    const text = element.text?.trim();
+    if (text && text.length > 2 && text.length < 50) return text;
+
+    // Name attribute
+    const name = element.attributes?.name;
+    if (name) return name.replace(/[-_]/g, ' ');
+
+    return '';
+}
+
+/**
+ * Compute similarity score between a stored action and a new element.
+ * Returns a score from 0.0 to 1.0.
+ */
+export function computeSimilarity(
+    storedAction: { role: string; aria_label: string; tag: string; url_pattern: string; container_context: string },
+    element: UIElement,
+    pageUrl: string
+): number {
+    let score = 0;
+    let weights = 0;
+
+    const newFp = {
+        role: element.attributes?.role || inferRole(element),
+        ariaLabel: normalizeText(element.attributes?.['aria-label'] || ''),
+        tag: element.tag.toLowerCase(),
+        urlPattern: normalizeUrl(pageUrl),
+        containerContext: detectContainer(element)
+    };
+
+    // URL Pattern match (weight: 3)
+    if (storedAction.url_pattern === newFp.urlPattern) {
+        score += 3;
+    }
+    weights += 3;
+
+    // Tag match (weight: 2)
+    if (storedAction.tag === newFp.tag) {
+        score += 2;
+    }
+    weights += 2;
+
+    // Role match (weight: 2)
+    if (storedAction.role === newFp.role) {
+        score += 2;
+    }
+    weights += 2;
+
+    // Container match (weight: 1)
+    if (storedAction.container_context === newFp.containerContext) {
+        score += 1;
+    }
+    weights += 1;
+
+    // Aria label similarity (weight: 2) - fuzzy match
+    if (storedAction.aria_label && newFp.ariaLabel) {
+        const labelSim = stringSimilarity(storedAction.aria_label, newFp.ariaLabel);
+        score += labelSim * 2;
+    } else if (!storedAction.aria_label && !newFp.ariaLabel) {
+        score += 1; // Both empty = partial match
+    }
+    weights += 2;
+
+    return score / weights;
+}
+
+/**
+ * Simple string similarity using Jaccard index on words.
+ */
+function stringSimilarity(a: string, b: string): number {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/));
+    const wordsB = new Set(b.toLowerCase().split(/\s+/));
+
+    const intersection = [...wordsA].filter(x => wordsB.has(x)).length;
+    const union = new Set([...wordsA, ...wordsB]).size;
+
+    return union > 0 ? intersection / union : 0;
+}
+
+/**
+ * Compute a hash representing the current DOM state.
+ * Used to detect if we're in the same state as before.
+ */
+export function computeStateHash(url: string, elementCount: number, pageTitle?: string): string {
+    const data = `${normalizeUrl(url)}::${elementCount}::${pageTitle || ''}`;
+    return crypto.createHash('md5').update(data).digest('hex');
+}
