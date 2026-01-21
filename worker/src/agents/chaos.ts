@@ -34,12 +34,13 @@ async function recordStep(
         xpath?: string,
         actionType?: 'click' | 'type' | 'navigate',
         payload?: string
-    }
-) {
+    },
+    parentStepId?: string
+): Promise<string | null> {
     const stepId = crypto.randomUUID();
     const evidence = await captureEvidence(page, suiteId, stepId, false);
 
-    const { error } = await supabase.from('test_steps').insert({
+    const payload: any = {
         id: stepId,
         suite_id: suiteId,
         title: title,
@@ -50,16 +51,31 @@ async function recordStep(
         xpath: actionData?.xpath,
         action_type: actionData?.actionType,
         action_payload: actionData?.payload
-    });
+    };
+
+    if (parentStepId) {
+        payload.parent_step_id = parentStepId;
+    }
+
+    const { error } = await supabase.from('test_steps').insert(payload);
 
     if (error) {
-        if (error.code === '23505') {
+        if (error.code === '42703') { // Column does not exist
+            console.warn('[DB] ⚠️ "parent_step_id" column missing. Retrying without it.');
+            delete payload.parent_step_id;
+            const { error: retryError } = await supabase.from('test_steps').insert(payload);
+            if (retryError) console.error('[RECORD_STEP] ❌ Retry failed:', retryError);
+            else return stepId;
+        } else if (error.code === '23505') {
             console.log(`[DB] ⚠️ Duplicate step ID avoided (idempotency check passed).`);
+            return stepId;
         } else {
             console.error('[RECORD_STEP] ❌ Error saving step:', error);
             console.error('[RECORD_STEP] Payload:', { suite_id: suiteId, title, status });
         }
     }
+
+    return error ? null : stepId;
 }
 
 
@@ -274,6 +290,7 @@ REGLAS CRÍTICAS:
 3. PRIORIDAD MÁXIMA: No saltes pasos. Si hay botones funcionales en la pantalla actual, clickéalos primero.
 4. Si detectas un cambio de tab/pestaña, asume que es una vista nueva y resetea tu curiosidad exploratoria.
 5. **BRANCH PRIORITIZATION**: Si recibes "should_prioritize_branches": true en stats, DEBES priorizar elementos que sean tabs, toggles, radios o switches sin interactuar. Estos revelan flujos alternativos críticos que aún no has explorado.
+6. **FLOW COMPLETION**: Si "blocked_flows" > 0 en stats, significa que hay Botones/Acciones que visitaste pero sin completar sus inputs relacionados (Flow Vacio vs Flow Lleno). DEBES buscar esos inputs y llenarlos para habilitar la prueba real del flujo.
 
 Responde JSON:
 {
@@ -319,6 +336,9 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
     let actions = 0; // Moved outside try for catch block access
     const MAX_ACTIONS = 50;
+
+    // NEW: Track parent step for tree structure
+    let lastStepId: string | undefined;
 
     try {
         await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -387,7 +407,6 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 const baseUrl = currentUrl.split('#')[0].split('?')[0];
 
                 // GENERIC FLOW-AWARE FINGERPRINTING
-                // Strategy: If this is a button/CTA, check if nearby inputs are uninteracted
                 let fingerprint = `${baseUrl}::${e.selector}`;
 
                 const isActionable = e.tag === 'button' ||
@@ -397,18 +416,15 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                         e.hint.toLowerCase().includes('create')));
 
                 if (isActionable) {
-                    // Find nearby inputs (generic heuristic: within 10 index positions)
                     const nearbyInputs = elements
                         .filter(el => el.tag === 'input' && Math.abs(el.i - e.i) < 10)
                         .map(el => ({ selector: el.selector, index: el.i }));
 
                     if (nearbyInputs.length > 0) {
-                        // Create flow signature based on which inputs were interacted
                         const inputsState = nearbyInputs
                             .map(inp => interactedInputs.has(`${baseUrl}::${inp.selector}`) ? '1' : '0')
                             .join('');
 
-                        // If there are uninteracted inputs, this is a different flow variant
                         if (inputsState.includes('0')) {
                             fingerprint = `${fingerprint}::flow_${inputsState}`;
                         }
@@ -427,7 +443,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
             const unvisitedCount = mappedElements.filter(e => !e.visited).length;
 
-            // BRANCH DRIFT DETECTION: Check if we should prioritize unexplored branches
+            // BRANCH DRIFT DETECTION
             const branchElements = elements.filter(e => (e as any).isBranchElement);
             const uninteractedBranches = branchElements.filter(e => {
                 const baseUrl = currentUrl.split('#')[0].split('?')[0];
@@ -440,6 +456,23 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             if (shouldPrioritizeBranches) {
                 await vigaLog(suiteId, `🔀 Branch drift detected (${actionsSinceLastBranchSwitch} actions). Priorizando ${uninteractedBranches.length} branches sin explorar.`, 'info');
             }
+
+            // FLOW COMPLETION GUARD:
+            // Detect Actionables that have nearby inputs which are NOT fully interacted.
+            const blockedFlows = mappedElements.filter(e => {
+                const isActionable = e.tag === 'button' || (e.tag === 'a' && /submit|send|start|create|search/i.test(e.hint));
+                if (!isActionable) return false;
+
+                const nearbyInputs = elements.filter(el => el.tag === 'input' && Math.abs(el.i - e.i) < 10);
+                if (nearbyInputs.length === 0) return false;
+
+                const hasUninteractedInputs = nearbyInputs.some(inp => {
+                    const baseUrl = currentUrl.split('#')[0].split('?')[0];
+                    return !interactedInputs.has(`${baseUrl}::${inp.selector}`);
+                });
+
+                return hasUninteractedInputs;
+            });
 
             // DEFENSIVE: Wrap DOM access in try/catch
             let pageContent = '';
@@ -454,7 +487,6 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 pageTitle = await page.title().catch(() => 'Unknown');
             } catch (e: any) {
                 await vigaLog(suiteId, `⚠️ Error extrayendo contexto: ${e.message}`, 'warning');
-                // Continue with empty context instead of crashing
             }
 
             const context = JSON.stringify({
@@ -467,6 +499,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 interactive_elements: mappedElements,
                 stats: {
                     unvisited_elements: unvisitedCount,
+                    blocked_flows: blockedFlows.length,
                     total_elements: mappedElements.length,
                     uninteracted_branches: uninteractedBranches.length,
                     should_prioritize_branches: shouldPrioritizeBranches
@@ -475,7 +508,6 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 available_credentials: credentials
             });
 
-            // Update job progress
             await updateJobProgress(jobId, {
                 current_action: actions + 1,
                 max_actions: MAX_ACTIONS,
@@ -483,7 +515,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 elements_found: elements.length
             });
 
-            // --- WARMUP PHASE (Deterministic) ---
+            // --- WARMUP PHASE ---
             if (actions < WARMUP_ACTIONS) {
                 await vigaLog(suiteId, `🏃 WARMUP MODE (${actions + 1}/${WARMUP_ACTIONS})`, 'info');
 
@@ -495,7 +527,6 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     })
                     .sort((a, b) => b.score - a.score);
 
-                // Solo actuamos si hay algo con score > 1 (filtramos basura)
                 if (scoredElements.length > 0 && scoredElements[0].score > 1) {
                     const topCandidate = scoredElements[0];
                     const target = elements.find(el => el.i === topCandidate.i)!;
@@ -505,7 +536,6 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                     await vigaLog(suiteId, `👉 ${actionDesc} (Score: ${topCandidate.score})`, 'info');
 
-                    // Execute without LLM logic
                     const baseUrl = currentUrl.split('#')[0].split('?')[0];
                     const fingerprint = `${baseUrl}::${target.selector}`;
                     visitedFingerprints.add(fingerprint);
@@ -527,19 +557,20 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                         actions++;
                         await sleep(1000);
 
-                        await recordStep(suiteId, page, actionDesc, 'success', `Acción determinística (Score ${topCandidate.score})`, {
+                        const newStepId = await recordStep(suiteId, page, actionDesc, 'success', `Acción determinística (Score ${topCandidate.score})`, {
                             selector: target.selector,
                             xpath: target.xpath,
                             actionType: actionType as any
-                        });
+                        }, lastStepId);
 
-                        continue; // Skip LLM call
+                        // If recordStep succeeded, update lastStepId for next iteration (Tree)
+                        if (newStepId) lastStepId = newStepId;
+
+                        continue;
                     } catch (err: any) {
                         await vigaLog(suiteId, `⚠️ Fallo heurístico: ${err.message}`, 'warning');
-                        // Fallback to LLM naturally if warmup action fails
                     }
                 } else {
-                    // No high-confidence warmup targets found
                     await vigaLog(suiteId, `ℹ️ Warmup skippeado: sin candidatos claros`, 'info');
                 }
             }
@@ -551,7 +582,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
             if (decision.action === 'finish') {
                 await vigaLog(suiteId, '✅ Chaos: Cobertura completada.', 'success');
-                await recordStep(suiteId, page, 'EXPLORACIÓN COMPLETADA', 'success', decision.thought || 'No hay más elementos nuevos que probar.');
+                await recordStep(suiteId, page, 'EXPLORACIÓN COMPLETADA', 'success', decision.thought || 'No hay más elementos nuevos que probar.', undefined, lastStepId);
                 break;
             }
 
@@ -584,19 +615,17 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                         try { await page.fill(target.selector, payload); }
                         catch (e) { if (target.xpath) await page.fill(`xpath=${target.xpath}`, payload); else throw e; }
 
-                        // Track this input as interacted (for flow-aware coverage)
                         interactedInputs.add(`${baseUrl}::${target.selector}`);
                     } else {
                         console.log(`[CHAOS] 🖱️ Clicking...`);
 
-                        // Track if this is a branch element (tab, toggle, radio)
                         if ((target as any).isBranchElement) {
                             const branchKey = `${baseUrl}::${target.selector}`;
                             interactedBranches.add(branchKey);
-                            actionsSinceLastBranchSwitch = 0; // Reset drift counter
+                            actionsSinceLastBranchSwitch = 0;
                             await vigaLog(suiteId, `🔀 Branch activado: ${target.hint.slice(0, 50)}`, 'info');
                         } else {
-                            actionsSinceLastBranchSwitch++; // Increment drift counter
+                            actionsSinceLastBranchSwitch++;
                         }
                         try { await page.click(target.selector, { timeout: 8000 }); }
                         catch (e) {
@@ -611,7 +640,6 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                     console.log(`[CHAOS] 📝 Recording step...`);
 
-                    // DEFENSIVE: Check if page is still valid before recording
                     if (page.isClosed()) {
                         await vigaLog(suiteId, `⚠️ Página cerrada tras acción. Registrando sin evidencia.`, 'warning');
                         await supabase.from('test_steps').insert({
@@ -620,38 +648,42 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                             title: decision.title || actionDesc,
                             expected_result: 'Page closed after action',
                             status: 'warning',
-                            selector: target.selector
+                            selector: target.selector,
+                            parent_step_id: lastStepId // Try to chain even if closing
                         });
                     } else {
-                        await recordStep(suiteId, page, decision.title || actionDesc, 'success', decision.thought || actionDesc, {
+                        const newStepId = await recordStep(suiteId, page, decision.title || actionDesc, 'success', decision.thought || actionDesc, {
                             selector: target.selector,
                             xpath: target.xpath,
                             actionType: decision.action as 'click' | 'type',
                             payload: decision.action === 'type' ? (credentials && (target.selector.includes('password') || target.selector.includes('pass')) ? '******' : decision.payload) : undefined
-                        });
+                        }, lastStepId);
+
+                        if (newStepId) lastStepId = newStepId;
                     }
                     console.log(`[CHAOS] ✅ Step recorded.`);
                 } catch (err: any) {
-                    // SOFT FAILURE: Log but don't crash the loop
                     await vigaLog(suiteId, `⚠️ Fallo: ${err.message}`, 'warning');
 
-                    // Try to record failure (defensive)
                     try {
                         if (!page.isClosed()) {
-                            await recordStep(suiteId, page, `ERROR: ${decision.title}`, 'failed', err.message);
+                            // On failure, we record it, but we typically do NOT advance the parent ID 
+                            // because the action failed, so we're theoretically still at the previous state?
+                            // OR we record it as a dead-end child. Let's record it as child.
+                            await recordStep(suiteId, page, `ERROR: ${decision.title}`, 'failed', err.message, undefined, lastStepId);
                         } else {
                             await supabase.from('test_steps').insert({
                                 id: crypto.randomUUID(),
                                 suite_id: suiteId,
                                 title: `ERROR: ${decision.title}`,
                                 expected_result: err.message,
-                                status: 'failed'
+                                status: 'failed',
+                                parent_step_id: lastStepId
                             });
                         }
                     } catch (recordErr: any) {
                         console.error(`[CHAOS] Could not record step failure: ${recordErr.message}`);
                     }
-                    // Continue loop instead of breaking
                 }
             }
             await sleep(500);
@@ -672,24 +704,23 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
         console.error(`[CHAOS-CRITICAL] 💥 Fatal Loop Error: ${e.message}`);
         console.error(e);
 
-        // Try to save partial progress
         try {
             if (!page.isClosed()) {
-                await recordStep(suiteId, page, 'FATAL ERROR', 'failed', `Critical failure: ${e.message}`);
+                await recordStep(suiteId, page, 'FATAL ERROR', 'failed', `Critical failure: ${e.message}`, undefined, lastStepId);
             } else {
                 await supabase.from('test_steps').insert({
                     id: crypto.randomUUID(),
                     suite_id: suiteId,
                     title: 'FATAL ERROR (Page Closed)',
                     expected_result: `Critical failure: ${e.message}`,
-                    status: 'failed'
+                    status: 'failed',
+                    parent_step_id: lastStepId
                 });
             }
         } catch (recordErr: any) {
             console.error(`[CHAOS-CRITICAL] ⚠️ Could not record fatal error: ${recordErr.message}`);
         }
 
-        // Mark as completed with warnings if we made meaningful progress
         if (actions > 5) {
             await vigaLog(suiteId, `⚠️ Sesión terminada prematuramente pero con progreso (${actions} acciones)`, 'warning');
             await supabase.from('test_suites').update({ status: 'completed' }).eq('id', suiteId);
@@ -697,7 +728,6 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             await supabase.from('test_suites').update({ status: 'failed' }).eq('id', suiteId);
         }
 
-        // Don't re-throw if we made meaningful progress
         if (actions < 5) throw e;
     } finally {
         clearInterval(keepalive);
