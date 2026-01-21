@@ -237,49 +237,38 @@ async function smartWaitForElements(page: any, suiteId: string): Promise<UIEleme
 }
 
 const CHAOS_SYSTEM = `
-Eres un Tester de Chaos Inteligente y Analítico. Tu misión es explorar aplicaciones web como lo haría un QA experto.
+Eres un QA Lead Senior auditando una aplicación web. 
+Tu misión es ejecutar casos de prueba significativos, NO solo clickear botones.
+
+TUS REPORTES ("title") SON LEÍDOS POR CLIENTES Y FOUNDERS.
+DEBEN PARECER ESCRITOS POR UN HUMANO EXPERTO.
+
+🔴 PROHIBIDO (Títulos Técnicos):
+❌ "Click button" 
+❌ "Type input"
+❌ "Select element"
+❌ "Navegar a URL"
+❌ "Probar funcionalidad"
+
+🟢 OBLIGATORIO (Títulos de Intención QA):
+✅ "Validar Inicio de Sesión Incorrecto" (Intención clara)
+✅ "Verificar Cambio de Tema (Dark Mode)" (Intención clara)
+✅ "Explorar Navegación Principal" (Intención clara)
+✅ "Completar Formulario de Contacto" (Un flujo completo)
+✅ "Probar Búsqueda de Productos" (Acción de negocio)
 
 CONTEXTO QUE RECIBIRÁS:
 - Contenido visible de la página (texto, encabezados)
-- Elementos interactivos con sus propiedades
+- Elementos interactivos con sus propiedades (hint, tag, role)
 - Historial de acciones previas
 
 TU PROCESO DE DECISIÓN:
 1. ANALIZA el propósito de la página actual (¿Landing?, ¿Login?, ¿Dashboard?).
-2. Para CADA elemento que consideres, identifica:
-   - ¿QUÉ ES? (botón de login, toggle de tema, input de búsqueda, link de navegación, etc.)
-   - ¿QUÉ FUNCIÓN tiene según su texto/label/contexto?
-   - ¿POR QUÉ es importante probarlo en el contexto actual?
-3. FASE 1 - EXPLORACIÓN LOCAL: Debes interactuar con TODOS los elementos relevantes de la vista actual (botones, toggles, inputs) ANTES de navegar a otra página.
-4. FASE 2 - NAVEGACIÓN PROFUNDA: Solo si la vista actual está "agotada" (todos los elementos visitados), busca links de navegación o login.
+2. IDENTIFICA qué casos de prueba son relevantes aquí.
+3. EJECUTA la acción que mejor valide ese caso de prueba.
 
-TU ANÁLISIS NEURAL ("thought") DEBE INCLUIR:
-✅ FORMATO CORRECTO:
-"Identifico el [TIPO DE ELEMENTO] '[NOMBRE/LABEL]' ubicado en [UBICACIÓN]. Su función aparente es [PROPÓSITO INFERIDO]. Lo probaré porque [RAZÓN ESPECÍFICA SEGÚN CONTEXTO]."
-
-❌ RESPUESTA GENÉRICA INACEPTABLE:
-"Debo probar esto para ver su funcionalidad"
-"Voy a clickear este botón"
-"Necesito ver qué hace"
-
-✅ EJEMPLOS DE BUEN RAZONAMIENTO:
-
-Ejemplo 1:
-{
-  "title": "PROBAR TOGGLE DE TEMA",
-  "thought": "Identifico el botón 'Dark Mode' en la esquina superior derecha del header. Es un control de tema que debería alternar entre paletas claras y oscuras. Lo probaré para validar la respuesta visual del sistema a cambios de preferencias de UI, un caso crítico de accesibilidad.",
-  "index": 3,
-  "action": "click"
-}
-
-Ejemplo 2:
-{
-  "title": "COMPLETAR CAMPO EMAIL",
-  "thought": "Detecto el input con placeholder 'Enter your email' en el formulario de registro. Es un campo obligatorio para crear cuenta. Lo llenaré con un email de prueba para validar la validación de formato y continuar el flujo de onboarding.",
-  "index": 1,
-  "action": "type",
-  "payload": "test@qa.com"
-}
+TU ANÁLISIS NEURAL ("thought") DEBE EXPLICAR EL "POR QUÉ" DEL NEGOCIO.
+Ej: "Clickearé el botón 'Pricing' para validar que la tabla de precios carga correctamente y es legible."
 
 REGLAS CRÍTICAS:
 1. JAMÁS selecciones un elemento con "visited": true.
@@ -290,8 +279,8 @@ REGLAS CRÍTICAS:
 
 Responde JSON:
 {
-  "title": "ACCIÓN CLARA (Ej: PROBAR LOGIN)",
-  "thought": "[ANÁLISIS CONTEXTUAL ESPECÍFICO SIGUIENDO EL FORMATO ARRIBA]",
+  "title": "NOMBRE DEL TEST CASE (HUMANO Y DESCRIPTIVO)",
+  "thought": "[RAZONAMIENTO QA PROFESIONAL]",
   "index": number,
   "action": "click" | "type" | "finish",
   "payload": "string si action=type"
@@ -512,21 +501,24 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 elements_found: elements.length
             });
 
-            // --- WARMUP PHASE (Ultra-Safe) ---
+            // --- WARMUP PHASE (Ultra-Safe & Invisible) ---
             if (actions < WARMUP_ACTIONS) {
-                await vigaLog(suiteId, `🏃 WARMUP MODE: Passive Scroll`, 'info');
+                await vigaLog(suiteId, `🏃 WARMUP: Passive Scroll (Internal)`, 'info');
 
                 try {
                     // Safe Passive Action: Scroll
                     await page.mouse.wheel(0, 500);
                     await sleep(1000);
 
-                    // Record generic safe step WITHOUT an element selector
-                    const newStepId = await recordStep(suiteId, page, 'WARMUP: Passive Scroll', 'success', 'Desplazamiento inicial seguro para cargar contenido.', {
-                        actionType: 'navigate' as any
+                    // UX UPDATE: Warmup actions are INTERNAL. 
+                    // Do NOT record them as Test Steps to avoid pollution.
+                    /*
+                    const newStepId = await recordStep(suiteId, page, 'WARMUP: Passive Scroll', 'success', 'Desplazamiento inicial seguro.', {
+                       actionType: 'navigate' as any
                     }, lastStepId);
-
                     if (newStepId) lastStepId = newStepId;
+                    */
+
                     actions++;
                     continue;
                 } catch (err: any) {
@@ -535,21 +527,24 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             }
 
             // KILL-SWITCH: Check if DOM changed (Optimized)
-            // We use elements.length and URL hash as rough proxy, plus maybe pageContent hash?
-            // "stateHash" defined above uses (currentUrl + elements.length).
-            // If strict hash equal AND we are past warmup, pause LLM.
-
+            // If DOM is static, we end the run but generate a COHERENT SUMMARY.
             if (stateHash === lastStateHash && actions > WARMUP_ACTIONS) {
-                await vigaLog(suiteId, `🛑 Kill-switch: DOM sin cambios. Deteniendo LLM para ahorrar.`, 'warning');
-                await recordStep(suiteId, page, 'OPTIMIZACIÓN: DOM ESTÁTICO', 'success', 'El DOM no cambió tras la última acción. Se detiene el análisis para evitar costos y loops.', undefined, lastStepId);
+                const summary = `Se ha validado la estabilidad del DOM tras ${actions} acciones. No se detectan cambios visuales o interactivos adicionales. Session finalizada para optimizar recursos.`;
+                await vigaLog(suiteId, `🛑 Kill-switch: DOM Estable.`, 'warning');
+
+                // Generate a Summary Step instead of a technical log
+                await recordStep(suiteId, page, '🏁 Resumen de Cobertura: DOM Estable', 'success', summary, undefined, lastStepId);
                 break;
             }
             lastStateHash = stateHash;
 
             // BUDGET CHECK
             if (llmCalls >= MAX_LLM_CALLS) {
-                await vigaLog(suiteId, `💰 Run Budget Reached (${MAX_LLM_CALLS}). Finishing.`, 'warning');
-                await recordStep(suiteId, page, 'BUDGET LISTO', 'success', `Se alcanzó el límite de ${MAX_LLM_CALLS} llamadas al LLM.`, undefined, lastStepId);
+                const summary = `Se completó el prespuesto asignado de ${MAX_LLM_CALLS} decisiones inteligentes. Casos críticos verificados.`;
+                await vigaLog(suiteId, `💰 Budget Reached.`, 'warning');
+
+                // Generate a Summary Step
+                await recordStep(suiteId, page, '🏁 Resumen de Ejecución: Límite de Presupuesto', 'success', summary, undefined, lastStepId);
                 break;
             }
 
@@ -560,7 +555,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
             if (decision.action === 'finish') {
                 await vigaLog(suiteId, '✅ Chaos: Cobertura completada.', 'success');
-                await recordStep(suiteId, page, 'EXPLORACIÓN COMPLETADA', 'success', decision.thought || 'No hay más elementos nuevos que probar.', undefined, lastStepId);
+                await recordStep(suiteId, page, '🏁 Exploración Completada', 'success', decision.thought || 'Se han cubierto todos los elementos relevantes detectados.', undefined, lastStepId);
                 break;
             }
 
@@ -572,10 +567,16 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 const baseUrl = currentUrl.split('#')[0].split('?')[0];
                 const targetMapped = mappedElements.find(m => m.i === target.i);
                 const fingerprint = targetMapped?._fingerprint || `${baseUrl}::${target.selector}`;
-                const actionDesc = `${decision.action} en "${target.hint}"`;
-                await vigaLog(suiteId, `👉 [${actions + 1}/${MAX_ACTIONS}] ${decision.title || actionDesc}`, 'info');
 
-                history.push(`${decision.title}: ${decision.thought}`);
+                // UX: Fallback title should be readable if LLM fails
+                const readableTarget = target.hint || target.tag;
+                const actionDesc = `${decision.action === 'click' ? 'Interactuar con' : 'Escribir en'} ${readableTarget}`;
+
+                const stepTitle = decision.title || actionDesc;
+
+                await vigaLog(suiteId, `👉 [${actions + 1}/${MAX_ACTIONS}] ${stepTitle}`, 'info');
+
+                history.push(`${stepTitle}: ${decision.thought}`);
 
                 // ANTI-LOOP: Check if this is a reversible action already executed IN THIS STATE
                 // We use (stateHash + fingerprint) to block repetitions in the same context
@@ -626,14 +627,14 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                         await supabase.from('test_steps').insert({
                             id: crypto.randomUUID(),
                             suite_id: suiteId,
-                            title: decision.title || actionDesc,
+                            title: stepTitle,
                             expected_result: 'Page closed after action',
                             status: 'warning',
                             selector: target.selector,
-                            parent_step_id: lastStepId // Try to chain even if closing
+                            parent_step_id: lastStepId
                         });
                     } else {
-                        const newStepId = await recordStep(suiteId, page, decision.title || actionDesc, 'success', decision.thought || actionDesc, {
+                        const newStepId = await recordStep(suiteId, page, stepTitle, 'success', decision.thought || actionDesc, {
                             selector: target.selector,
                             xpath: target.xpath,
                             actionType: decision.action as 'click' | 'type',
@@ -648,15 +649,12 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                     try {
                         if (!page.isClosed()) {
-                            // On failure, we record it, but we typically do NOT advance the parent ID 
-                            // because the action failed, so we're theoretically still at the previous state?
-                            // OR we record it as a dead-end child. Let's record it as child.
-                            await recordStep(suiteId, page, `ERROR: ${decision.title}`, 'failed', err.message, undefined, lastStepId);
+                            await recordStep(suiteId, page, `ERROR: ${stepTitle}`, 'failed', err.message, undefined, lastStepId);
                         } else {
                             await supabase.from('test_steps').insert({
                                 id: crypto.randomUUID(),
                                 suite_id: suiteId,
-                                title: `ERROR: ${decision.title}`,
+                                title: `ERROR: ${stepTitle}`,
                                 expected_result: err.message,
                                 status: 'failed',
                                 parent_step_id: lastStepId
