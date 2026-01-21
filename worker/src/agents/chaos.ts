@@ -40,7 +40,7 @@ const MAX_LLM_CALLS = 15;
 const STABILITY_THRESHOLD = 3;
 
 // V3 EXPERIMENTAL (Feature Flag)
-const CHAOS_V3_EXPERIMENTAL = process.env.CHAOS_V3_EXPERIMENTAL === 'true' || false;
+const CHAOS_V3 = true; // permanent v3 activation
 const CHAOS_REPLAY_MODE = process.env.CHAOS_REPLAY_MODE === 'true' || false;
 
 async function vigaLog(
@@ -274,14 +274,13 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
     const llmCtx = createLLMContext();
 
     // V3.1 CRITICAL: Force explicit version logging
-    const version = CHAOS_V3_EXPERIMENTAL ? 'v3.1' : 'v2';
+    const version = 'v3.2.1'; // permanent version
     await vigaLog(suiteId, `🌪️ VIGA Chaos Agent ${version} Iniciado`, 'info');
 
     // V3.1 CRITICAL: Hard-fail if v3 expected but not wired
-    if (CHAOS_V3_EXPERIMENTAL) {
-        await vigaLog(suiteId, `[V3] Experimental features ACTIVE`, 'info');
-        console.log('[V3] CHAOS_V3_EXPERIMENTAL=true - Running v3 execution loop');
-    }
+    // v3 is always active
+    await vigaLog(suiteId, `[V3] Permanent features ACTIVE`, 'info');
+    console.log('[V3] Permanent v3 execution loop running');
 
     const keepalive = setInterval(() => { if (!page.isClosed()) page.evaluate(() => true).catch(() => { }); }, 15000);
 
@@ -311,7 +310,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             if (elements.length === 0) break;
 
             // Phase 3: Include global state in hash
-            const stateHash = computeStateHash(currentUrl, elements.length, pageTitle, CHAOS_V3_EXPERIMENTAL ? currentGlobalState : undefined);
+            const stateHash = computeStateHash(currentUrl, elements.length, pageTitle, CHAOS_V3 ? currentGlobalState : undefined);
 
             if (stateHash === lastStateHash) consecutiveStableStates++;
             else { consecutiveStableStates = 0; lastStateHash = stateHash; }
@@ -333,7 +332,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 console.log(`[SCAN-DEBUG] fingerprint=${fingerprint} assigned_action_id=${action.id}`);
 
                 // V3 Phase 3: Accumulate Snapshot
-                if (CHAOS_V3_EXPERIMENTAL) {
+                if (CHAOS_V3) {
                     snapshotRows.push({
                         suite_id: suiteId,
                         state_hash: stateHash,
@@ -360,7 +359,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                 if (!executedInRuntime && !executedInDB) {
                     untested.push({ element: el, action });
-                } else if (isGlobalState && CHAOS_V3_EXPERIMENTAL) {
+                } else if (isGlobalState && CHAOS_V3) {
                     // Assuming we might want to re-execute global state to switch back? 
                     // For now, let's stick to "not executed in this run" for global state to avoid infinite flapping
                     if (!executedInRuntime) untested.push({ element: el, action });
@@ -371,7 +370,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             }
 
             // V3 Phase 3: Commit Snapshots
-            if (CHAOS_V3_EXPERIMENTAL && snapshotRows.length > 0) {
+            if (CHAOS_V3 && snapshotRows.length > 0) {
                 await supabase.from('discovered_elements_snapshot')
                     .upsert(snapshotRows, { onConflict: 'suite_id,state_hash,action_id', ignoreDuplicates: true })
                     .then(({ error }) => { if (error) console.warn('[V3] Snapshot error:', error.message); });
@@ -494,7 +493,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     }
 
                     // V3 EXPERIMENTAL: Global State & Depth Detection
-                    if (CHAOS_V3_EXPERIMENTAL) {
+                    if (CHAOS_V3) {
                         // Phase 3: Mark Discovered Element as Executed
                         await supabase.from('discovered_elements_snapshot')
                             .update({ was_executed: true })
@@ -545,7 +544,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 }
 
                 // PHASE 4.2: Smart Termination (Diminishing Returns)
-                if (executionStatus === 'success' || (CHAOS_V3_EXPERIMENTAL && requiresRescan)) {
+                if (executionStatus === 'success' || (CHAOS_V3 && requiresRescan)) {
                     stepsWithoutValue = 0;
                 } else {
                     stepsWithoutValue++;
@@ -583,7 +582,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
         await vigaLog(suiteId, `🏁 Finalizado: ${actionsExecuted} pasos.`, 'success');
 
         // V3 EXPERIMENTAL: Generate test narrative
-        if (CHAOS_V3_EXPERIMENTAL) {
+        if (CHAOS_V3) {
             try {
                 const { generateTestNarrative } = await import('../lib/narrative');
                 const { data: steps } = await supabase
