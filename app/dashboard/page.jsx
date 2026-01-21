@@ -78,7 +78,8 @@ export default function MissionControlPage() {
     setStatus('running');
     setSuiteStatus('running');
     setShowCompletionModal(false);
-    setChaosOpen(true);
+    // setChaosOpen(true); // Don't open automatically
+    showNotify("Agent Deployed to Background", "success");
 
     const { data: suite } = await supabase.from('test_suites').insert([{
       name: `${missionMode.toUpperCase()}: ${url} ${missionGoal ? '(' + missionGoal + ')' : ''}`,
