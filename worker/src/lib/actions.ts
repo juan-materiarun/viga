@@ -6,6 +6,7 @@
  */
 
 import { supabase } from './supabase';
+import { Logger } from './logger';
 import {
     UIElement,
     computeFingerprint,
@@ -72,7 +73,7 @@ export async function findOrCreateAction(
             await updateActionSelectors(exactMatch.id, element);
             return exactMatch as UIAction;
         }
-        console.log(`[ACTIONS] Exact match ${exactMatch.id} already used in this scan. Forcing new variant.`);
+        Logger.debug(`[ACTIONS] Exact match ${exactMatch.id} already used in this scan. Forcing new variant.`);
     }
 
     // 2. Try fuzzy match by URL + role + similarity score
@@ -101,7 +102,7 @@ export async function findOrCreateAction(
 
             const similarity = computeSimilarity(candidate, element, pageUrl);
             if (similarity >= SIMILARITY_THRESHOLD) {
-                console.log(`[ACTIONS] Matched existing action (score: ${(similarity * 100).toFixed(0)}%): ${candidate.canonical_name}`);
+                Logger.debug(`[ACTIONS] Matched existing action (score: ${(similarity * 100).toFixed(0)}%): ${candidate.canonical_name}`);
                 await updateActionSelectors(candidate.id, element);
                 return candidate as UIAction;
             }
@@ -143,7 +144,7 @@ export async function findOrCreateAction(
             .single();
 
         if (!error) {
-            console.log(`[ACTIONS] Created new action: ${newAction.canonical_name}`);
+            Logger.debug(`[ACTIONS] Created new action: ${newAction.canonical_name}`);
             return created as UIAction;
         }
 
@@ -167,7 +168,7 @@ export async function findOrCreateAction(
             }
         }
 
-        console.error('[ACTIONS] Failed to create action:', error);
+        Logger.error('[ACTIONS] Failed to create action', error);
         throw error;
     }
 

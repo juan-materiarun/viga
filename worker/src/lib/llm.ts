@@ -1,4 +1,5 @@
 import Groq from 'groq-sdk';
+import { Logger } from './logger';
 
 /* ───────── TIPOS ───────── */
 
@@ -6,11 +7,14 @@ export type LLMContext = {
     keys: string[];
     pointer: number;
     cooldownUntil: number;
+    model: string; // Model to use for this context
 };
+
+export type ModelTier = 'fast' | 'smart' | 'premium';
 
 /* ───────── CONTEXTO POR AGENTE ───────── */
 
-export function createLLMContext(): LLMContext {
+export function createLLMContext(tier: ModelTier = 'smart'): LLMContext {
     const keys = [
         process.env.GROQ_API_KEY,
         process.env.GROQ_API_KEY_2,
@@ -21,10 +25,18 @@ export function createLLMContext(): LLMContext {
         throw new Error('❌ No hay llaves de Groq configuradas.');
     }
 
+    // Model selection based on tier
+    const models: Record<ModelTier, string> = {
+        fast: 'llama-3.1-8b-instant',      // Fast, cheap, simple tasks
+        smart: 'llama-3.3-70b-versatile',  // Balanced, most tasks
+        premium: 'llama-3.3-70b-versatile' // Complex reasoning (fallback to same for now)
+    };
+
     return {
         keys,
         pointer: 0,
-        cooldownUntil: 0
+        cooldownUntil: 0,
+        model: models[tier]
     };
 }
 
@@ -38,7 +50,7 @@ function getClient(ctx: LLMContext) {
     const key = ctx.keys[currentSlot];
     ctx.pointer++;
 
-    console.log(`[VIGA-LLM] Usando key slot ${currentSlot + 1}/${totalKeys}`);
+    Logger.debug(`[VIGA-LLM] Using key slot ${currentSlot + 1}/${totalKeys}`);
     return new Groq({ apiKey: key });
 }
 
@@ -48,12 +60,12 @@ export async function callGroqJSON(
     ctx: LLMContext,
     system: string,
     user: string,
-    retries = 5 // Increased default retries
+    retries = 5
 ): Promise<any> {
 
     if (Date.now() < ctx.cooldownUntil) {
         const waitTime = ctx.cooldownUntil - Date.now();
-        console.log(`[VIGA-LLM] Cooldown activo. Esperando ${waitTime}ms...`);
+        Logger.debug(`[VIGA-LLM] Cooldown active. Waiting ${waitTime}ms...`);
         await sleep(waitTime);
     }
 
@@ -61,7 +73,7 @@ export async function callGroqJSON(
         const groq = getClient(ctx);
 
         const res = await groq.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
+            model: ctx.model, // Use model from context
             temperature: 0.2,
             response_format: { type: 'json_object' },
             messages: [
@@ -72,7 +84,7 @@ export async function callGroqJSON(
 DIRECTIVAS DE QA SENIOR:
 1. Genera casos de prueba reales y humanos.
 2. NO inventes botones inexistentes.
-3. Si un botón requiere input previo, complétalo.
+3. Razona y responde SIEMPRE en ESPAÑOL.
 4. Devuelve SIEMPRE JSON válido.`
                 },
                 { role: 'user', content: user }
@@ -87,20 +99,17 @@ DIRECTIVAS DE QA SENIOR:
         const isRateLimit = msg.includes('rate') || msg.includes('429');
 
         if (isRateLimit) {
-            // Exponentially increase cooldown on repeated failures
             const baseWait = 3000;
-            const multiplier = (6 - retries); // 1st try = 3s, 2nd = 6s, etc.
+            const multiplier = (6 - retries);
             const waitTime = baseWait * multiplier;
 
-            console.warn(`[GROQ] Rate limit detectado. Incrementando cooldown a ${waitTime}ms (Intentos restantes: ${retries})`);
+            Logger.warn(`[GROQ] Rate limit detected. Increasing cooldown to ${waitTime}ms (Retries left: ${retries})`);
             ctx.cooldownUntil = Date.now() + waitTime;
-
-            // Wait immediately before retrying
             await sleep(waitTime);
         }
 
         if (retries <= 0) {
-            console.error('[VIGA-LLM] ❌ Se agotaron los reintentos. La IA no responde.');
+            Logger.error('[VIGA-LLM] ❌ Retries exhausted. AI unresponsive.', err);
             return null;
         }
 
@@ -108,32 +117,131 @@ DIRECTIVAS DE QA SENIOR:
     }
 }
 
+export async function callGroq(
+    ctx: LLMContext,
+    system: string,
+    user: string,
+    retries = 5
+): Promise<string> {
+
+    if (Date.now() < ctx.cooldownUntil) {
+        const waitTime = ctx.cooldownUntil - Date.now();
+        Logger.debug(`[VIGA-LLM] Cooldown active. Waiting ${waitTime}ms...`);
+        await sleep(waitTime);
+    }
+
+    try {
+        const groq = getClient(ctx);
+
+        const res = await groq.chat.completions.create({
+            model: ctx.model, // Use model from context
+            temperature: 0.2,
+            messages: [
+                { role: 'system', content: system },
+                { role: 'user', content: user }
+            ]
+        });
+
+        return res.choices[0].message.content || '';
+
+    } catch (err: any) {
+        const msg = err?.message || '';
+        const isRateLimit = msg.includes('rate') || msg.includes('429');
+
+        if (isRateLimit) {
+            const baseWait = 3000;
+            const multiplier = (6 - retries);
+            const waitTime = baseWait * multiplier;
+
+            Logger.warn(`[GROQ] Rate limit detected. Increasing cooldown to ${waitTime}ms (Retries left: ${retries})`);
+            ctx.cooldownUntil = Date.now() + waitTime;
+            await sleep(waitTime);
+        }
+
+        if (retries <= 0) {
+            Logger.error('[VIGA-LLM] ❌ Retries exhausted. AI unresponsive.', err);
+            return '';
+        }
+
+        return callGroq(ctx, system, user, retries - 1);
+    }
+}
+
 
 /**
- * PHASE 4: Batch Ranking of Actions
+ * PHASE 4: Batch Ranking of Actions (V4 BROOM LOGIC)
  * Ranks candidate actions to find the most valuable next step.
  */
 export async function batchRankActions(
     ctx: LLMContext,
     candidates: { id: string; name: string; category: string }[],
-    goal?: string
-): Promise<{ selected_id: string; reason: string } | null> {
+    pageContext?: string, // V4: "We are on Login Page, inputs are empty"
+    goal?: string,
+    purpose?: string // V4: "Collect user data for audit"
+): Promise<{ selected_id: string; reason: string; suggested_payload?: string } | null> {
     if (candidates.length === 0) return null;
     if (candidates.length === 1) return { selected_id: candidates[0].id, reason: 'Only candidate available' };
 
-    const system = `You are a Chaos Testing Agent. Return the ID of the SINGLE most valuable action to execute next.
-PRIORITY:
-1. Actions that reveal new content (Open Modal, Expand, Navigate).
-2. Form interactions (Inputs, Submits).
-3. State toggles (only if likely to show new UI).
-4. Ignore purely decorative or redundant links.
-5. PREFER actions that match the goal: "${goal || 'Explore everything'}".`;
+    const system = `Eres un QA Engineer Senior implementando la estrategia "BARREDORA" (BROOM SWEEP).
+    
+    CONTEXTO DE LA PÁGINA:
+    - Tipo/Contexto: ${pageContext || 'No especificado'}
+    - Objetivo Principal: ${purpose || 'Exploración General'}
+    - Meta de la Prueba: "${goal || 'Validación sistemática'}"
 
-    const user = `Candidates:
+    ESTRATEGIA:
+    1. ALINEAR: Todas las acciones deben avanzar hacia el "Objetivo Principal".
+    2. BARRER: Si hay inputs, llénalos con datos COHERENTES al objetivo (ej: si es Login, usa credenciales; si es Auditoría, usa una URL).
+    3. NAVEGAR: Solo sal de la página si el objetivo actual está cumplido.
+
+    INSTRUCCIONES CLAVE PARA INPUTS:
+    - DETECTA EL CONTEXTO del campo (por nombre, etiqueta o placeholder).
+    - SI es "Código" o "HTML": Genera un snippet VÁLIDO y realista (ej: "<div><h1>Test</h1></div>" o "console.log('test')"). NO pongas texto plano como "Hola".
+    - SI es "URL" o "Website": Usa URLs reales/válidas (ej: "https://google.com").
+    - SI es "Email": Usa emails con formato válido.
+    - SI es "Búsqueda": Usa términos relevantes al sitio.
+    
+    Analiza los candidatos y selecciona el mejor paso siguiente.`;
+
+    const user = `Candidatos:
 ${candidates.map(c => `- [${c.id}] (${c.category}) ${c.name}`).join('\n')}
 
-Response Format JSON: { "selected_id": "uuid", "reason": "short explanation" }`;
+Formato de Respuesta JSON: { "selected_id": "uuid", "reason": "proceso de pensamiento en español", "suggested_payload": "valor para input (opcional)" }`;
 
     const res = await callGroqJSON(ctx, system, user);
     return res;
+}
+
+/**
+ * V4: Page Context Analysis (The Cartographer's Logic)
+ * Analyzes the screen to determine what kind of page we are on and what's missing.
+ */
+export async function analyzePageContext(
+    ctx: LLMContext,
+    url: string,
+    title: string,
+    contextSummary: string // Changed from elementSummary to generic context
+): Promise<{ page_type: string; missing_data: string[]; strategy: string }> {
+    const system = `Eres un Arquitecto de Pruebas de IA (El Cartógrafo). Tu trabajo es ENTENDER EL ESTADO Y FINALIDAD de esta página.
+
+    URL: ${url}
+    Título: ${title}
+    Contexto Visual y Textual:
+    ${contextSummary}
+
+    INSTRUCCIONES CLAVE:
+    1. Si ves texto como "Loading", "Cargando", "Processing" -> Tu estrategia debe ser "ESPERAR".
+    2. Si ves errores -> Tu estrategia debe ser "REPORTAR_ERROR".
+    3. Si es un formulario -> Tu estrategia es "LLENAR_DATOS".
+
+    ANALIZA Y RESPONDE EN FORMATO JSON:
+    1. "page_type": Tipo de página (LOGIN, DASHBOARD, LOADING_STATE, ERROR_PAGE, etc).
+    2. "purpose": Breve descripción en ESPAÑOL.
+    3. "strategy": Estrategia recomendada.
+
+    Formato JSON: { "page_type": "string", "purpose": "string", "strategy": "string" }`;
+
+    const user = "Analiza el estado actual de la página.";
+
+    return await callGroqJSON(ctx, system, user) || { page_type: 'DESCONOCIDO', purpose: 'Explorar', strategy: 'Exploración genérica' };
 }

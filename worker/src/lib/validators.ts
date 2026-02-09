@@ -70,8 +70,10 @@ export async function validateActionEffect(
                 return await validateToggle(page, beforeState);
             case 'EXPORT':
                 return await validateDownload(page); // Export often behaves like download
+            case 'INPUT':
+            case 'ACTION': // Generic Click
             default:
-                return { passed: true, evidence: 'Action executed (no specific validator)', wasSkipped: true };
+                return await validateGeneric(page, beforeState);
         }
     } catch (error: any) {
         console.warn(`[VALIDATOR] Error validating ${intent}:`, error);
@@ -120,7 +122,15 @@ async function validateNavigation(page: Page, before: StateSnapshot): Promise<Va
         return { passed: true, evidence: `Page title changed to "${afterTitle}"` };
     }
 
-    return { passed: false, evidence: 'URL and Title remained identical after navigation action' };
+    // V3.2 fallback: Check for significant DOM structure change (SPA navigation without URL change)
+    const afterState = await captureState(page);
+    const elemDiff = (afterState.elementCount || 0) - (before.elementCount || 0);
+
+    if (Math.abs(elemDiff) > 5) {
+        return { passed: true, evidence: `SPA Navigation detected (local DOM changed by ${elemDiff} elements)` };
+    }
+
+    return { passed: false, evidence: 'URL, Title, and DOM structure remained identical after navigation action' };
 }
 
 async function validateSubmit(page: Page, before: StateSnapshot): Promise<ValidationResult> {
@@ -139,13 +149,19 @@ async function validateSubmit(page: Page, before: StateSnapshot): Promise<Valida
     // Check for success/error messages
     const statusMessage = await page.evaluate(() => {
         const body = document.body.innerText.toLowerCase();
-        if (body.includes('success') || body.includes('éxito') || body.includes('guardado')) return 'Success message detected';
-        if (body.includes('error') || body.includes('fail') || body.includes('falló')) return 'Error message detected';
+        // Detección de errores en Español e Inglés
+        if (body.includes('error') || body.includes('fail') || body.includes('falló') || body.includes('incorrecto') || body.includes('invalid') || body.includes('inválido') || body.includes('required') || body.includes('requerido')) {
+            return { type: 'error', text: 'Error detectado en la página' };
+        }
+        if (body.includes('success') || body.includes('éxito') || body.includes('guardado')) return { type: 'success', text: 'Mensaje de éxito detectado' };
         return null;
     });
 
     if (statusMessage) {
-        return { passed: true, evidence: statusMessage };
+        if (statusMessage.type === 'error') {
+            return { passed: false, evidence: statusMessage.text };
+        }
+        return { passed: true, evidence: statusMessage.text };
     }
 
     return { passed: false, evidence: 'No significant page change or status message detected after submit' };
@@ -168,4 +184,26 @@ async function validateToggle(page: Page, before: StateSnapshot): Promise<Valida
     // Fallback: If we can't detect subtle CSS changes easily without snapshot, we assume passed for now
     // unless we strictly check specific attributes.
     return { passed: true, evidence: 'Toggle executed (visual verification needed)', wasSkipped: true };
+}
+
+async function validateGeneric(page: Page, before: StateSnapshot): Promise<ValidationResult> {
+    const after = await captureState(page);
+
+    if (after.url !== before.url) return { passed: true, evidence: `Navigation to ${after.url}` };
+    if (after.title !== before.title) return { passed: true, evidence: `Title changed: ${after.title}` };
+
+    const elemDiff = after.elementCount - before.elementCount;
+    if (Math.abs(elemDiff) > 2) return { passed: true, evidence: `DOM structure changed (${elemDiff > 0 ? '+' : ''}${elemDiff} elements)` };
+
+    // V3.2: Check body text hash or length as a proxy for content change
+    const lengthDiff = (after.bodyText?.length || 0) - (before.bodyText?.length || 0);
+    if (Math.abs(lengthDiff) > 20) return { passed: true, evidence: `Content changed significantly (${lengthDiff} chars)` };
+
+    // If nothing obvious changed, we flag it.
+    // In V3.2 strict mode, this triggers LLM re-evaluation or warning.
+    return {
+        passed: false,
+        evidence: 'No detectable state change (Zero-Entropy Action). Pending Neural Analysis.',
+        wasSkipped: false
+    };
 }

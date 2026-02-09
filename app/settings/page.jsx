@@ -1,211 +1,252 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import {
-  Slack,
-  Save,
-  Zap,
-  Key,
-  Loader2,
-  AlertCircle,
-  Shield
-} from 'lucide-react';
-import { supabase } from '../../lib/supabase.js';
-import { useAuth } from '../contexts/AuthContext'; // BIEN: Importar del contexto directamente
-import { motion } from 'framer-motion';
+import { useState, useEffect } from 'react';
+import { useTheme } from '../contexts/ThemeContext';
+import { useLanguage } from '../contexts/LanguageContext';
+import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '@/lib/supabase/client';
+import Card from '../components/Card';
+import Button from '../components/Button';
+import InfoTooltip from '../components/InfoTooltip';
+import Loader from '../components/Loader';
+import { Sun, Moon, Globe, Save, Upload } from 'lucide-react';
 
 export default function SettingsPage() {
-  const { user } = useAuth();
-  const [isSaving, setIsSaving] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [settings, setSettings] = useState({
-    autoHeal: true,
-    deepScan: false,
-    weeklyReports: true,
-    apiKey: ''
-  });
+  const { theme, toggleTheme } = useTheme();
+  const { language, toggleLanguage, t } = useLanguage();
+  const { user, profile, refreshProfile } = useAuth();
+
+  const [companyName, setCompanyName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
 
   useEffect(() => {
-    async function loadSettings() {
-      if (!user) return;
-      const { data } = await supabase
-        .from('profiles')
-        .select('settings, groq_key')
-        .eq('id', user.id)
-        .single();
-
-      if (data) {
-        setSettings({
-          autoHeal: data.settings?.autoHeal ?? true,
-          deepScan: data.settings?.deepScan ?? false,
-          weeklyReports: data.settings?.weeklyReports ?? true,
-          apiKey: data.groq_key || ''
-        });
-      }
-      setLoading(false);
+    if (profile) {
+      setCompanyName(profile.company_name || '');
     }
-    loadSettings();
-  }, [user]);
-
-  const toggleSetting = (key) => {
-    setSettings(prev => ({ ...prev, [key]: !prev[key] }));
-  };
+  }, [profile]);
 
   const handleSave = async () => {
-    setIsSaving(true);
-    const { autoHeal, deepScan, weeklyReports, apiKey } = settings;
-    await supabase.from('profiles').upsert({
-      id: user.id,
-      groq_key: apiKey,
-      settings: { autoHeal, deepScan, weeklyReports },
-      updated_at: new Date().toISOString()
-    });
-    setTimeout(() => setIsSaving(false), 800);
+    if (!user) return;
+
+    setSaving(true);
+    setMessage('');
+
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ company_name: companyName })
+        .eq('id', user.id);
+
+      if (error) throw error;
+
+      await refreshProfile();
+      setMessage('✅ CAMBIOS GUARDADOS');
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Error saving:', error);
+      setMessage('❌ ERROR AL GUARDAR');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  if (loading) return (
-    <div className="flex flex-col items-center justify-center h-[60vh] space-y-4">
-      <Loader2 className="animate-spin text-blue-500" size={32} />
-      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 italic">Syncing Node Preferences</span>
-    </div>
-  );
+  const handleAvatarUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${user.id}-${Date.now()}.${fileExt}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(fileName, file, { upsert: true });
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(fileName);
+
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ avatar_url: publicUrl })
+        .eq('id', user.id);
+
+      if (updateError) throw updateError;
+
+      await refreshProfile();
+      setMessage('✅ FOTO ACTUALIZADA');
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Error uploading avatar:', error);
+      setMessage('❌ ERROR AL SUBIR FOTO');
+    }
+  };
 
   return (
-    <motion.div 
-      initial={{ opacity: 0 }} 
-      animate={{ opacity: 1 }}
-      className="max-w-4xl mx-auto space-y-8 pb-20"
-    >
-      {/* HEADER */}
-      <div className="flex justify-between items-end">
-        <div>
-          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500 mb-2 italic">System Control / Identity</div>
-          <h1 className="text-3xl font-black uppercase tracking-tighter text-slate-900 dark:text-white transition-colors duration-75">Settings</h1>
-          <p className="text-slate-500 text-xs font-bold uppercase tracking-widest mt-1">Configure su ecosistema de auditoría automatizada.</p>
-        </div>
-        <button 
-          onClick={handleSave}
-          disabled={isSaving}
-          className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-800 text-white px-8 py-4 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-blue-500/20 transition-all flex items-center gap-3 active:scale-95"
-        >
-          {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16}/>}
-          {isSaving ? 'Synchronizing...' : 'Commit Changes'}
-        </button>
-      </div>
+    <div className="p-8 animate-fade-in">
+      <h1 className="text-3xl font-bold text-[var(--text-primary)] mb-8">
+        {t('settings.title')}
+      </h1>
 
-      <div className="space-y-6">
-        {/* GROQ CONFIGURATION */}
-        <div className="bg-white dark:bg-[#0A0A0A] border border-slate-200 dark:border-white/5 rounded-[32px] p-8 relative overflow-hidden group transition-colors duration-75 shadow-sm dark:shadow-2xl">
-          <div className="absolute top-0 right-0 p-8 opacity-5 group-hover:opacity-10 transition-opacity text-slate-900 dark:text-white">
-            <Key size={80} />
+      <div className="max-w-4xl mx-auto space-y-6">
+        {/* Message */}
+        {message && (
+          <div className="p-4 rounded-lg bg-[var(--bg-hover)] border border-[var(--border-color)] text-center">
+            <p className="text-sm font-semibold text-[var(--text-primary)]">{message}</p>
           </div>
-          <div className="flex items-center gap-2 mb-8 text-blue-500 relative z-10">
-            <Key size={16} />
-            <h3 className="font-black uppercase tracking-widest text-sm text-slate-900 dark:text-white italic transition-colors duration-75">Intelligence Provider</h3>
+        )}
+
+        {/* Apariencia */}
+        <Card>
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-4 flex items-center gap-2">
+            {theme === 'dark' ? <Moon size={20} /> : <Sun size={20} />}
+            {t('settings.appearance')}
+            <InfoTooltip text="Personaliza la apariencia de VIGA cambiando el tema y el idioma de la interfaz." />
+          </h2>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-semibold text-[var(--text-secondary)] mb-2">
+                {t('settings.theme')}
+              </label>
+              <div className="flex gap-3">
+                <Button
+                  variant={theme === 'dark' ? 'primary' : 'secondary'}
+                  onClick={() => theme !== 'dark' && toggleTheme()}
+                  className="flex-1"
+                >
+                  <Moon size={16} />
+                  {t('settings.dark')}
+                </Button>
+                <Button
+                  variant={theme === 'light' ? 'primary' : 'secondary'}
+                  onClick={() => theme !== 'light' && toggleTheme()}
+                  className="flex-1"
+                >
+                  <Sun size={16} />
+                  {t('settings.light')}
+                </Button>
+              </div>
+            </div>
           </div>
-          
-          <div className="space-y-4 relative z-10">
-            <div className="flex flex-col gap-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Groq API Key</label>
-              <input 
-                type="password" 
-                value={settings.apiKey}
-                onChange={(e) => setSettings({...settings, apiKey: e.target.value})}
-                className="w-full max-w-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-4 text-xs font-mono text-blue-600 dark:text-blue-400 outline-none focus:border-blue-500 transition-all"
-                placeholder="gsk_viga_protocol_x882"
+        </Card>
+
+        {/* Idioma */}
+        <Card>
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-4 flex items-center gap-2">
+            <Globe size={20} />
+            {t('settings.language')}
+          </h2>
+
+          <div className="flex gap-3">
+            <Button
+              variant={language === 'es' ? 'primary' : 'secondary'}
+              onClick={() => language !== 'es' && toggleLanguage()}
+              className="flex-1"
+            >
+              🇪🇸 ESPAÑOL
+            </Button>
+            <Button
+              variant={language === 'en' ? 'primary' : 'secondary'}
+              onClick={() => language !== 'en' && toggleLanguage()}
+              className="flex-1"
+            >
+              🇬🇧 ENGLISH
+            </Button>
+          </div>
+        </Card>
+
+        {/* Organización */}
+        <Card>
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-4 flex items-center gap-2">
+            {t('settings.organization')}
+            <InfoTooltip text="Configura el nombre de tu organización y la foto de perfil que se mostrará en el sidebar." />
+          </h2>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-semibold text-[var(--text-secondary)] mb-2">
+                NOMBRE DE LA ORGANIZACIÓN
+              </label>
+              <input
+                type="text"
+                className="input no-uppercase"
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+                placeholder="Nombre de la organización"
               />
-              <p className="text-[9px] font-bold uppercase text-slate-600 mt-2 flex items-center gap-1 italic">
-                <Shield size={10} /> La clave se almacena bajo cifrado AES-256 en su nodo privado.
+            </div>
+          </div>
+        </Card>
+
+        {/* Perfil */}
+        <Card>
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-4">
+            {t('settings.profile')}
+          </h2>
+
+          <div className="space-y-4">
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[var(--accent-primary)] to-[var(--accent-secondary)] flex items-center justify-center text-white font-bold text-xl overflow-hidden">
+                {profile?.avatar_url ? (
+                  <img src={profile.avatar_url} className="w-full h-full object-cover" alt="Avatar" />
+                ) : (
+                  user?.email?.[0]?.toUpperCase() || 'U'
+                )}
+              </div>
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleAvatarUpload}
+                  className="hidden"
+                />
+                <div className="px-4 py-2 rounded-lg bg-[var(--bg-hover)] border border-[var(--border-color)] hover:bg-[var(--accent-primary)] hover:text-white transition-all text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                  <Upload size={16} />
+                  CAMBIAR FOTO
+                </div>
+              </label>
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-[var(--text-secondary)] mb-2">
+                EMAIL
+              </label>
+              <input
+                type="email"
+                className="input no-uppercase"
+                value={user?.email || ''}
+                disabled
+                placeholder="Email"
+              />
+              <p className="text-xs text-[var(--text-muted)] mt-1">
+                El email no se puede cambiar
               </p>
             </div>
           </div>
+        </Card>
+
+        {/* Save Button */}
+        <div className="flex justify-end">
+          <Button
+            variant="primary"
+            size="lg"
+            onClick={handleSave}
+            disabled={saving}
+          >
+            {saving ? <Loader size="small" /> : <><Save size={20} />{t('common.save')}</>}
+          </Button>
         </div>
 
-        {/* PREFERENCIAS GENERALES */}
-        <div className="bg-white dark:bg-[#0A0A0A] border border-slate-200 dark:border-white/5 rounded-[32px] p-8 transition-colors duration-75 shadow-sm dark:shadow-2xl">
-           <div className="flex items-center gap-2 mb-8 text-blue-500">
-             <Zap size={16} />
-             <h3 className="font-black uppercase tracking-widest text-sm text-slate-900 dark:text-white italic transition-colors duration-75">Node Protocols</h3>
-           </div>
-           
-           <div className="space-y-2">
-              <ToggleRow 
-                label="Auto-Heal Nodes" 
-                active={settings.autoHeal} 
-                onClick={() => toggleSetting('autoHeal')}
-                desc="Reparación automática de scripts fallidos por cambios en el DOM"
-              />
-              <ToggleRow 
-                label="Deep Scan Mode" 
-                active={settings.deepScan} 
-                onClick={() => toggleSetting('deepScan')}
-                desc="Auditoría multicanal exhaustiva (Mobile / Desktop)"
-              />
-              <ToggleRow 
-                label="Weekly Analytics" 
-                active={settings.weeklyReports} 
-                onClick={() => toggleSetting('weeklyReports')}
-                desc="Reporte ejecutivo de salud del software enviado los lunes"
-              />
-           </div>
+        {/* Copyright */}
+        <div className="mt-8 pt-6 border-t border-[var(--border-color)] text-center">
+          <p className="text-sm text-[var(--text-muted)]">
+            © 2026 VIGA by <span className="font-bold text-[var(--accent-primary)]">MATERIA</span>. Todos los derechos reservados.
+          </p>
         </div>
-
-        {/* SLACK INTEGRATION */}
-        <div className="bg-white dark:bg-[#0A0A0A] border border-slate-200 dark:border-white/5 rounded-[32px] p-8 flex items-center justify-between transition-colors duration-75 shadow-sm dark:shadow-2xl border-l-4 border-l-[#4A154B]">
-          <div className="flex items-center gap-6">
-            <div className="w-14 h-14 bg-[#4A154B] rounded-2xl flex items-center justify-center shadow-lg">
-              <Slack size={30} color="white" />
-            </div>
-            <div>
-              <h3 className="font-black uppercase tracking-widest text-sm text-slate-900 dark:text-white italic transition-colors duration-75">Slack Dispatcher</h3>
-              <p className="text-[10px] text-slate-500 font-bold uppercase mt-1">Reciba alertas de bugs críticos en su canal de ingeniería.</p>
-            </div>
-          </div>
-          <button className="bg-slate-900 dark:bg-white text-white dark:text-black px-8 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:opacity-80 transition-all active:scale-95">
-            Connect Workspace
-          </button>
-        </div>
-
-        {/* DANGER ZONE */}
-        <div className="p-8 rounded-[32px] border border-red-500/20 bg-red-50/50 dark:bg-red-500/[0.01] flex items-center justify-between group hover:border-red-500/40 transition-all">
-           <div className="flex items-center gap-4">
-             <div className="p-3 bg-red-500/10 rounded-xl text-red-500">
-               <AlertCircle size={20} />
-             </div>
-             <div>
-               <h3 className="font-black uppercase tracking-widest text-[10px] text-red-500 mb-1">Critical Destruction Zone</h3>
-               <p className="text-[10px] text-slate-600 font-bold uppercase italic">Purgar historial de misiones y resetear tokens de inteligencia.</p>
-             </div>
-           </div>
-           <button className="bg-transparent border border-red-500/20 text-red-500/50 hover:bg-red-500 hover:text-white px-8 py-3 rounded-2xl text-[9px] font-black uppercase tracking-[0.2em] transition-all">
-             Purge All Data
-           </button>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
-function ToggleRow({ label, active, onClick, desc }) {
-  return (
-    <div className="flex items-center justify-between py-5 border-b border-slate-100 dark:border-white/5 last:border-0 group transition-colors duration-75">
-      <div className="flex-1">
-        <span className="text-[11px] font-black uppercase tracking-widest block group-hover:text-blue-500 transition-colors duration-300 text-slate-800 dark:text-slate-200">
-          {label}
-        </span>
-        <span className="text-[9px] font-bold uppercase text-slate-500 tracking-tighter">{desc}</span>
-      </div>
-      <div 
-        onClick={onClick}
-        className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors duration-200 ${
-          active ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.3)]' : 'bg-slate-200 dark:bg-slate-800'
-        }`}
-      >
-        <motion.div 
-          animate={{ x: active ? 26 : 4 }}
-          transition={{ type: "spring", stiffness: 700, damping: 35 }}
-          className="absolute top-1 w-4 h-4 bg-white rounded-full shadow-lg will-change-transform" 
-        />
       </div>
     </div>
   );

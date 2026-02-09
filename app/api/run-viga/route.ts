@@ -1,12 +1,7 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import { processVigaTransaction } from '../../../lib/billing';
+import { supabaseAdmin } from '@/lib/supabase/admin';
+import { processVigaTransaction } from '@/lib/supabase/billing';
 import crypto from 'crypto';
-
-const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,7 +37,7 @@ export async function POST(req: Request) {
 
         // Create job in database
         const jobId = crypto.randomUUID();
-        const { error: jobError } = await supabase.from('jobs').insert({
+        const { error: jobError } = await supabaseAdmin.from('jobs').insert({
             id: jobId,
             suite_id: suite_id,
             user_id: userId,

@@ -26,6 +26,7 @@ export interface UIElement {
         'aria-label'?: string;
         'aria-pressed'?: string;
         placeholder?: string;
+        title?: string; // Add title to interface
     };
 }
 
@@ -66,8 +67,16 @@ export function computeFingerprint(element: UIElement, pageUrl: string): string 
 export function normalizeUrl(url: string): string {
     try {
         const u = new URL(url);
-        // Keep only origin + pathname, remove trailing slash
-        return `${u.origin}${u.pathname}`.replace(/\/$/, '');
+        // Normalize dynamic segments (IDs, UUIDs) to generic placeholders
+        // 1. UUIDs -> :uuid
+        let path = u.pathname.replace(
+            /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/ig,
+            ':uuid'
+        );
+        // 2. Numeric IDs (stand-alone segments or end of path) -> :id
+        path = path.replace(/\/\d+(\/|$)/g, '/:id$1');
+
+        return `${u.origin}${path}`.replace(/\/$/, '');
     } catch {
         return url;
     }
@@ -213,61 +222,21 @@ function normalizeText(text: string): string {
     return (text || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-export function generateCanonicalName(element: UIElement, actionType: 'click' | 'type'): string {
+export function generateCanonicalName(element: UIElement, actionType: 'click' | 'type', payload?: string): string {
     const rawLabel = extractBestLabel(element);
     const label = sanitizeLabel(rawLabel);
-    const intent = inferIntent(element);
-    const role = element.attributes?.role || inferRole(element);
-    const container = element.container_context || detectContainer(element);
-    const hint = (element.hint || '').toLowerCase();
 
-    // V3.2: Context-aware naming (Priority: Semantic Journeys)
-
-    // Tabs & View Switchers
-    if (role === 'tab' || hint.includes('tab') || container === 'navigation' || container === 'header') {
-        if (hint.includes('código') || label.toLowerCase().includes('code')) return 'Cambiar vista a Editor de Código';
-        if (hint.includes('sitio') || hint.includes('preview') || label.toLowerCase().includes('preview')) return 'Cambiar vista a Preview';
-        if (label) return `Cambiar a pestaña "${label}"`;
+    if (actionType === 'type') {
+        const fieldName = label || element.attributes?.name || 'Campo';
+        // Hide sensitive payload in name if needed, but for now show it for clarity
+        const value = payload ? `"${payload}"` : '...';
+        return `Escribir ${value} en "${fieldName}"`;
     }
 
-    // Global Settings
-    if (hint.includes('theme') || hint.includes('tema') || hint.includes('dark') || hint.includes('light')) {
-        const isDark = hint.includes('dark') || hint.includes('oscuro');
-        return `Cambiar tema a ${isDark ? 'oscuro' : 'claro'}`;
-    }
+    if (label) return `Clic en "${label}"`;
 
-    // Intent-based naming
-    switch (intent) {
-        case 'DOWNLOAD': return `Descargar ${label || 'archivo'}`;
-        case 'EXPORT': return `Exportar ${label || 'datos'}`;
-        case 'SUBMIT': return `Enviar ${container === 'form' ? 'formulario' : 'datos'}`;
-        case 'TOGGLE': return `Alternar "${label || 'opción'}"`;
-        case 'INPUT':
-            if (label && label.length < 50) return `Completar campo "${label}"`;
-            return `Escribir en campo de ${element.attributes?.type || 'texto'}`;
-    }
-
-    // Fallback: Action Verbs
-    const actionVerbs: Record<string, Record<string, string>> = {
-        click: {
-            'submit-button': 'Enviar',
-            'close-button': 'Cerrar',
-            'button': 'Activar',
-            'link': 'Ir a',
-            'default': 'Interactuar con'
-        },
-        type: {
-            'password-input': 'Ingresar contraseña',
-            'email-input': 'Ingresar email',
-            'default': 'Escribir en'
-        }
-    };
-
-    const verbs = actionVerbs[actionType] || actionVerbs.click;
-    const verb = verbs[role] || verbs.default;
-
-    if (label && label.length > 0) return `${verb} "${label}"`;
-    return `${verb} elemento ${role}`;
+    const role = element.attributes?.role || element.tag;
+    return `Clic en <${role}>`;
 }
 
 /**
@@ -275,11 +244,16 @@ export function generateCanonicalName(element: UIElement, actionType: 'click' | 
  */
 function sanitizeLabel(label: string | undefined): string {
     if (!label) return '';
-    // Strip anything between < and >, plus stray angle brackets
-    let clean = label.replace(/<.*?>/g, '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
+    // Strip HTML comments, script tags, and broken tag fragments
+    let clean = label
+        .replace(/<!--[\s\S]*?-->/g, '') // HTML Comments
+        .replace(/<\/?[\w\s="'-]+>?/g, '') // Any tag or partial tag like </title or !--
+        .replace(/[<>]/g, '') // Stray brackets
+        .replace(/\s+/g, ' ')
+        .trim();
+
     if (clean.length > 50) clean = clean.substring(0, 47) + '...';
-    // Reject common code patterns
-    if (clean.includes('{') || clean.includes('}') || clean.includes('function') || clean.includes('const ')) return '';
+    if (clean.includes('{') || clean.includes('}') || clean.includes('function')) return '';
     return clean;
 }
 
@@ -289,23 +263,21 @@ function sanitizeLabel(label: string | undefined): string {
  */
 function extractBestLabel(element: UIElement): string {
     // Priority: aria-label > placeholder > visible text > name > id
-    const ariaLabel = element.attributes?.['aria-label'];
-    if (ariaLabel && ariaLabel.length > 2) return sanitizeLabel(ariaLabel.slice(0, 40));
+    const candidateStrings = [
+        element.attributes?.['aria-label'],
+        element.attributes?.title, // Add title priority
+        element.attributes?.placeholder,
+        element.text, // Inner text often best for buttons
+        element.hint?.split('|')[0], // First hint part
+        element.attributes?.name,
+        element.attributes?.id
+    ];
 
-    const placeholder = element.attributes?.placeholder;
-    if (placeholder && placeholder.length > 2) return sanitizeLabel(placeholder.slice(0, 40));
-
-    // From hint (first part before |)
-    const hintPart = element.hint?.split('|')[0]?.trim();
-    if (hintPart && hintPart.length > 2 && hintPart.length < 50) return sanitizeLabel(hintPart);
-
-    // Visible text
-    const text = element.text?.trim();
-    if (text && text.length > 2 && text.length < 50) return sanitizeLabel(text);
-
-    // Name attribute
-    const name = element.attributes?.name;
-    if (name) return sanitizeLabel(name.replace(/[-_]/g, ' '));
+    for (const raw of candidateStrings) {
+        if (!raw) continue;
+        const clean = sanitizeLabel(raw);
+        if (clean.length > 2 && !clean.toLowerCase().includes('undefined')) return clean;
+    }
 
     return '';
 }

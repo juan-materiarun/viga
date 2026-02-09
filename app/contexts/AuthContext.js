@@ -1,6 +1,6 @@
 'use client';
 import { createContext, useContext, useEffect, useState, useRef } from 'react';
-import { supabase } from '../../lib/supabase.js';
+import { supabase } from '@/lib/supabase/client';
 
 const AuthContext = createContext({});
 
@@ -40,9 +40,8 @@ export const AuthProvider = ({ children }) => {
         currentUserRef.current = newUser?.id;
 
         if (newUser) {
-          setTimeout(() => {
-            if (mounted) fetchProfile(newUser.id);
-          }, 150); // Slightly longer delay for safety
+          // Fetch profile immediately
+          if (mounted) fetchProfile(newUser.id);
           document.cookie = `viga-session=${session.access_token}; path=/; max-age=3600`;
         } else {
           setProfile(null);
@@ -56,7 +55,7 @@ export const AuthProvider = ({ children }) => {
     // Safety timeout: don't block the app forever if auth is slow/broken
     const timer = setTimeout(() => {
       if (mounted) setLoading(false);
-    }, 5000);
+    }, 2000); // Reduced from 5000ms to 2000ms
 
     return () => {
       mounted = false;

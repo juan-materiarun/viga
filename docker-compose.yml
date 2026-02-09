@@ -1,0 +1,15 @@
+version: '3.3'
+services:
+  browserless:
+    image: browserless/chrome:1.60-chrome-stable
+    ports:
+      - "3001:3001"
+    # network_mode: "host" # Reverted: Specific to Linux, fails on Windows
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - MAX_CONCURRENT_SESSIONS=10
+      - CONNECTION_TIMEOUT=600000
+      - DEFAULT_IGNORE_HTTPS_ERRORS=true
+    shm_size: "2gb"
+    restart: unless-stopped
