@@ -149,11 +149,11 @@ export default function ApiLabPage() {
             <div className="px-8 pt-8 pb-4 shrink-0 dashboard-header">
                 <div className="flex items-center justify-between mb-4">
                     <div>
-                        <h1 className="text-4xl font-bold text-[var(--text-primary)] mb-2 flex items-center gap-3">
-                            <Send className="text-[var(--accent-primary)]" size={40} />
+                        <h1 className="text-2xl font-bold text-[var(--text-primary)] mb-2 flex items-center gap-2">
+                            <Send className="text-[var(--accent-primary)]" size={28} />
                             API Lab
                         </h1>
-                        <p className="text-[var(--text-secondary)] text-lg ml-14">
+                        <p className="text-[var(--text-secondary)] text-sm ml-9">
                             ENTORNO DE PRUEBAS Y DEBUGGING DE API
                         </p>
                     </div>

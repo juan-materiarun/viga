@@ -58,18 +58,19 @@ export default function PerformancePage() {
 
             // Calculate Latency for this run
             let runLatency = 0;
-            if (suite.test_steps && suite.test_steps.length > 1) {
-                // ... same logic
+            // Allow even single step runs to be counted (latency 0 or fallback)
+            if (suite.test_steps && suite.test_steps.length > 0) {
                 const sortedSteps = [...suite.test_steps].sort((a, b) =>
                     new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
                 );
-                const first = new Date(sortedSteps[0].created_at).getTime();
-                const last = new Date(sortedSteps[sortedSteps.length - 1].created_at).getTime();
-                const duration = last - first;
-                const stepCount = suite.test_steps.length;
-                runLatency = Math.round(duration / stepCount); // Avg Time Per Step
-            } else {
-                return; // Skip empty runs
+
+                if (sortedSteps.length > 1) {
+                    const first = new Date(sortedSteps[0].created_at).getTime();
+                    const last = new Date(sortedSteps[sortedSteps.length - 1].created_at).getTime();
+                    const duration = last - first;
+                    const stepCount = sortedSteps.length;
+                    runLatency = stepCount > 0 ? Math.round(duration / stepCount) : 0; // Avg Time Per Step
+                }
             }
 
             // Global Stats Accumulation
@@ -97,7 +98,7 @@ export default function PerformancePage() {
             siteMap[url].runs.push({
                 created_at: suite.created_at,
                 latency: runLatency,
-                status: suite.status // Use actual status now
+                status: suite.status
             });
             siteMap[url].total_latency += runLatency;
         });
@@ -209,6 +210,14 @@ export default function PerformancePage() {
                         {[1, 2, 3].map(i => (
                             <div key={i} className="h-64 rounded-2xl bg-[var(--bg-secondary)] animate-pulse" />
                         ))}
+                    </div>
+                ) : sites.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-64 border-2 border-dashed border-[var(--border-color)] rounded-2xl bg-[var(--bg-secondary)]/30">
+                        <Activity size={48} className="text-[var(--text-muted)] mb-4 opacity-50" />
+                        <h3 className="text-lg font-semibold text-[var(--text-secondary)]">No hay datos de rendimiento</h3>
+                        <p className="text-[var(--text-muted)] text-sm mt-1">
+                            Ejecuta tests que se completen o fallen para ver métricas aquí.
+                        </p>
                     </div>
                 ) : (
                     <div className={`grid gap-6 ${viewMode === 'grid' ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3' : 'grid-cols-1'}`}>
