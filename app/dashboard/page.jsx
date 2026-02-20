@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Zap, Globe, Lock, Unlock, Target, Compass, LayoutTemplate, Cpu, Layers } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
+import { useRecentSuites, useDesbloqueadas } from '@/lib/hooks/use-viga-data';
 import { useTheme } from '../contexts/ThemeContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -22,39 +23,26 @@ export default function DashboardPage() {
   const [activeSuiteId, setActiveSuiteId] = useState(null);
   const [sourceSuiteId, setSourceSuiteId] = useState(null);
   const [status, setStatus] = useState('idle');
-  const [urlsDesbloqueadas, setUrlsDesbloqueadas] = useState([]);
   const [selectedUrl, setSelectedUrl] = useState('');
-  const [recentSuites, setRecentSuites] = useState([]);
 
   const router = useRouter();
 
   const { theme } = useTheme();
   const { t } = useLanguage();
   const { user, profile, refreshProfile } = useAuth();
+  const { data: recentSuites = [], mutate: mutateRecent } = useRecentSuites(5);
+  const { data: desbloqueadasRaw = [] } = useDesbloqueadas();
+
+  const urlsDesbloqueadas = desbloqueadasRaw.reduce((acc, suite) => {
+    if (!acc.find(s => s.base_url === suite.base_url)) {
+      acc.push(suite);
+    }
+    return acc;
+  }, []).slice(0, 10);
 
   useEffect(() => {
     if (user) refreshProfile();
   }, [user, status]);
-
-  // Cargar URLs desbloqueadas cuando se selecciona Atlas
-  useEffect(() => {
-    if (agentType === 'atlas' && user) {
-      cargarUrlsDesbloqueadas();
-    }
-  }, [agentType, user]);
-
-  useEffect(() => {
-    if (user) fetchRecentSuites();
-  }, [user]);
-
-  const fetchRecentSuites = async () => {
-    const { data } = await supabase
-      .from('test_suites')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(5);
-    setRecentSuites(data || []);
-  };
 
   useEffect(() => {
     const channel = supabase
@@ -64,33 +52,14 @@ export default function DashboardPage() {
         schema: 'public',
         table: 'test_suites'
       }, () => {
-        fetchRecentSuites();
+        mutateRecent();
       })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
-
-  const cargarUrlsDesbloqueadas = async () => {
-    const { data } = await supabase
-      .from('test_suites')
-      .select('id, name, base_url, created_at')
-      .eq('status', 'completed')
-      .order('created_at', { ascending: false });
-
-    if (data) {
-      // Agrupar por base_url para evitar duplicados
-      const urlsUnicas = data.reduce((acc, suite) => {
-        if (!acc.find(s => s.base_url === suite.base_url)) {
-          acc.push(suite);
-        }
-        return acc;
-      }, []);
-      setUrlsDesbloqueadas(urlsUnicas.slice(0, 10));
-    }
-  };
+  }, [mutateRecent]);
 
   const handleDeploy = async () => {
     if (!url) return;

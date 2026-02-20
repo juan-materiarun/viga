@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase/client';
+import { usePerformanceData } from '@/lib/hooks/use-viga-data';
 import {
     Activity, Globe, Zap, ArrowUpRight, ArrowDownRight,
     CheckCircle2, LayoutGrid, List, RefreshCw
@@ -14,33 +14,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 
 export default function PerformancePage() {
     const router = useRouter();
-    const [sites, setSites] = useState([]);
-    const [isLoading, setIsLoading] = useState(true);
     const [viewMode, setViewMode] = useState('grid'); // grid | list
-    const [stats, setStats] = useState({ total_runs: 0, avg_global_latency: 0, global_success_rate: 0 });
 
-    useEffect(() => {
-        fetchPerformanceData();
-    }, []);
+    const { data: suites = [], isValidating, mutate } = usePerformanceData(200);
+    const isLoading = isValidating && suites.length === 0;
 
-    const fetchPerformanceData = async () => {
-        setIsLoading(true);
+    const { sites, stats } = useMemo(() => {
+        if (!suites || suites.length === 0) return { sites: [], stats: { total_runs: 0, avg_global_latency: 0, global_success_rate: 0 } };
 
-        // 1. Fetch completed suites ordered by date
-        const { data: suites, error } = await supabase
-            .from('test_suites')
-            .select('id, base_url, status, created_at, completed_at, test_steps(created_at)')
-            .in('status', ['completed', 'failed']) // Include failed runs for partial data
-            .order('created_at', { ascending: false })
-            .limit(200); // Analyze last 200 runs for performance
-
-        if (error) {
-            console.error("Error fetching performance data:", error);
-            setIsLoading(false);
-            return;
-        }
-
-        // 2. Process Data
         const siteMap = {};
         let totalLatency = 0;
         let successfulRuns = 0;
@@ -125,13 +106,18 @@ export default function PerformancePage() {
             };
         });
 
-        setSites(processedSites);
-        setStats({
-            total_runs: validRunsCount,
-            avg_global_latency: validRunsCount > 0 ? Math.round(totalLatency / validRunsCount) : 0,
-            global_success_rate: validRunsCount > 0 ? Math.round((successfulRuns / validRunsCount) * 100) : 0
-        });
-        setIsLoading(false);
+        return {
+            sites: processedSites,
+            stats: {
+                total_runs: validRunsCount,
+                avg_global_latency: validRunsCount > 0 ? Math.round(totalLatency / validRunsCount) : 0,
+                global_success_rate: validRunsCount > 0 ? Math.round((successfulRuns / validRunsCount) * 100) : 0
+            }
+        };
+    }, [suites]);
+
+    const fetchPerformanceData = () => {
+        mutate();
     };
 
     return (

@@ -194,26 +194,39 @@ export const Cortex = {
         plan: async (
             historySummary: string,
             currentUrl: string,
-            availableActions: string[],
+            availableActions: string[] | string,
             llmCtx: any
         ): Promise<{ strategy: string, focus_selector: string | null }> => {
+
+            let actionsContext = "";
+            if (Array.isArray(availableActions)) {
+                actionsContext = `${availableActions.length} elementos (Botones, Links...):\n${availableActions.slice(0, 50).join('\n')}`;
+            } else {
+                actionsContext = `ACCESSIBILITY TREE:\n${availableActions.slice(0, 10000)}`;
+            }
+
             const prompt = `ERES EL ESTRATEGA DE CHAOS AGENT.
             
             SITUACIÓN:
             - URL: ${currentUrl}
             - HISTORIA RECIENTE: ${historySummary}
-            - ACCIONES DISPONIBLES: ${availableActions.length} elementos (Botones, Links...).
+            - CONTEXTO DE ACCIÓN: 
+            ${actionsContext}
 
             PROBLEMA: El agente necesita dirección. ¿Estamos dando vueltas en círculo? ¿Hay un área sin explorar?
             
             TU DECISIÓN:
-            1. ¿Cuál es el MEJOR siguiente movimiento estratégico? (Ej: "Intentar Login", "Ver Detalles", "Cambiar de página").
+            1. ¿Cuál es el MEJOR siguiente movimiento videoestratégico? (Ej: "Intentar Login", "Ver Detalles", "Cambiar de página").
             2. DAME UN SELECTOR (CSS) o TEXTO CLAVE para enfocarme.
             
             Output JSON: { "strategy": "Razón breve", "focus_selector": "css_selector_or_text_hint" }`;
 
-            const res = await callGroqJSON(llmCtx, "Eres un estratega militar de pruebas de software.", prompt);
-            return res || { strategy: "Exploración aleatoria (Default)", focus_selector: null };
+            try {
+                const res = await callGroqJSON(llmCtx, "Eres un estratega militar de pruebas de software.", prompt);
+                return res || { strategy: "Exploración aleatoria (Default)", focus_selector: null };
+            } catch (e) {
+                return { strategy: "Exploración aleatoria (Fallback)", focus_selector: null };
+            }
         }
     }
 };

@@ -2,87 +2,17 @@
 
 import { useState, useEffect } from 'react';
 import { Server, RefreshCw, Zap, Activity } from 'lucide-react';
-import { supabase } from '@/lib/supabase/client';
+import { useInfraStatus } from '@/lib/hooks/use-viga-data';
 import Card from '../components/Card';
 import Button from '../components/Button';
 
 export default function InfrastructurePage() {
-  // Initial loading is handled by Next.js loading.jsx
-  // We only track reloading state
-  const [isReloading, setIsReloading] = useState(false);
-  const [services, setServices] = useState([]);
+  const { data: services = [], isValidating, mutate } = useInfraStatus();
+  const isReloading = isValidating;
 
-  const fetchInfraStatus = async () => {
-    setIsReloading(true);
-    try {
-      const startDb = performance.now();
-      const dbPromise = supabase.from('profiles').select('id').limit(1);
-
-      const startApi = performance.now();
-      const apiPromise = fetch('https://api.groq.com/openai/v1/models', { mode: 'no-cors' }).catch(() => null);
-
-      const [dbResult, apiResult] = await Promise.all([dbPromise, apiPromise]);
-
-      const endDb = performance.now();
-      const dbLatency = Math.round(endDb - startDb);
-
-      const endApi = performance.now();
-      const apiLatency = Math.round(endApi - startApi);
-
-      const { error: dbError } = dbResult;
-
-      const realData = [
-        {
-          name: 'Agent Intelligence',
-          status: apiLatency < 1000 ? 'healthy' : 'warning',
-          uptime: '99.99%',
-          load: `${apiLatency}ms`,
-          spec: 'Llama-3.3-70b',
-          type: 'Groq API',
-          progress: Math.min(100, (apiLatency / 500) * 100)
-        },
-        {
-          name: 'Mission Database',
-          status: !dbError ? 'healthy' : 'error',
-          uptime: '100%',
-          load: `${dbLatency}ms`,
-          spec: 'PostgreSQL 15',
-          type: 'Supabase',
-          progress: Math.min(100, (dbLatency / 300) * 100)
-        },
-        {
-          name: 'Headless Engine',
-          status: 'healthy',
-          uptime: '99.9%',
-          load: '24ms',
-          spec: 'Playwright CDP',
-          type: 'Vercel Edge',
-          progress: 12
-        },
-        {
-          name: 'VIGA Core API',
-          status: 'healthy',
-          uptime: '99.8%',
-          load: '14ms',
-          spec: 'Node.js 20',
-          type: 'Next.js',
-          progress: 8
-        },
-      ];
-
-      setServices(realData);
-    } catch (err) {
-      console.error("Infra check failed", err);
-    } finally {
-      setIsReloading(false);
-    }
+  const fetchInfraStatus = () => {
+    mutate();
   };
-
-  useEffect(() => {
-    fetchInfraStatus();
-    const interval = setInterval(fetchInfraStatus, 30000);
-    return () => clearInterval(interval);
-  }, []);
 
   const getStatusColor = (status) => {
     switch (status) {

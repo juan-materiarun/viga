@@ -13,6 +13,7 @@ export interface Job {
     status: 'pending' | 'running' | 'completed' | 'failed';
     url: string;
     goal?: string;
+    objective?: string;
     credentials?: any;
     steps?: any[];
     progress?: any;

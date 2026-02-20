@@ -102,7 +102,7 @@ export async function runScoutAgent(jobId: string, url: string, suiteId: string)
                 if (linkQueue.length === 0) break;
             }
 
-            await updateJobProgress(jobId, { current_action: steps, max_actions: MAX_STEPS });
+            await updateJobProgress(jobId, null, null, { current_action: steps, max_actions: MAX_STEPS });
         }
 
         console.log('[SCOUT] Mission complete.');

@@ -175,33 +175,39 @@ export async function callGroq(
 export async function batchRankActions(
     ctx: LLMContext,
     candidates: { id: string; name: string; category: string }[],
-    pageContext?: string, // V4: "We are on Login Page, inputs are empty"
+    pageContext?: string,
     goal?: string,
-    purpose?: string // V4: "Collect user data for audit"
+    purpose?: string,
+    recentHistory?: string[] // V4.4: Last N action names taken, to avoid repetition
 ): Promise<{ selected_id: string; reason: string; suggested_payload?: string } | null> {
     if (candidates.length === 0) return null;
     if (candidates.length === 1) return { selected_id: candidates[0].id, reason: 'Only candidate available' };
+
+    const historySection = recentHistory && recentHistory.length > 0
+        ? `\n\n    ⚠️ HISTORIAL RECIENTE (EVITAR REPETIR ESTAS ACCIONES):\n    ${recentHistory.map(h => `- "${h}"`).join('\n    ')}\n    Si todos los candidatos están en el historial, elige el que genere mayor impacto o diferente estado.`
+        : '';
 
     const system = `Eres un QA Engineer Senior implementando la estrategia "BARREDORA" (BROOM SWEEP).
     
     CONTEXTO DE LA PÁGINA:
     - Tipo/Contexto: ${pageContext || 'No especificado'}
     - Objetivo Principal: ${purpose || 'Exploración General'}
-    - Meta de la Prueba: "${goal || 'Validación sistemática'}"
+    - Meta de la Prueba: "${goal || 'Validación sistemática'}"${historySection}
 
     ESTRATEGIA:
     1. ALINEAR: Todas las acciones deben avanzar hacia el "Objetivo Principal".
-    2. BARRER: Si hay inputs, llénalos con datos COHERENTES al objetivo (ej: si es Login, usa credenciales; si es Auditoría, usa una URL).
+    2. BARRER: Si hay inputs, llénalos con datos COHERENTES al objetivo.
     3. NAVEGAR: Solo sal de la página si el objetivo actual está cumplido.
+    4. NO REPETIR: Prioriza candidatos que NO figuran en el HISTORIAL RECIENTE.
 
     INSTRUCCIONES CLAVE PARA INPUTS:
-    - DETECTA EL CONTEXTO del campo (por nombre, etiqueta o placeholder).
-    - SI es "Código" o "HTML": Genera un snippet VÁLIDO y realista (ej: "<div><h1>Test</h1></div>" o "console.log('test')"). NO pongas texto plano como "Hola".
-    - SI es "URL" o "Website": Usa URLs reales/válidas (ej: "https://google.com").
-    - SI es "Email": Usa emails con formato válido.
-    - SI es "Búsqueda": Usa términos relevantes al sitio.
+    - DETECTA EL CONTEXTO del campo (por nombre, etiqueta, placeholder).
+    - SI el campo menciona HTML, CSS, JS, código, snippet o "pega" → generated_payload debe ser un SNIPPET de código HTML real.
+    - SI es "URL" o "Website": Usar "https://viga.dev".
+    - SI es "Email": Usar email válido.
+    - SI es "Búsqueda": Usar términos relevantes.
     
-    Analiza los candidatos y selecciona el mejor paso siguiente.`;
+    Selecciona el MEJOR paso siguiente que NO esté en el historial reciente.`;
 
     const user = `Candidatos:
 ${candidates.map(c => `- [${c.id}] (${c.category}) ${c.name}`).join('\n')}
@@ -226,7 +232,9 @@ export async function analyzePageContext(
 
     URL: ${url}
     Título: ${title}
-    Contexto Visual y Textual:
+    URL: ${url}
+    Título: ${title}
+    Contexto (Accessibility Tree JSON o Texto):
     ${contextSummary}
 
     INSTRUCCIONES CLAVE:

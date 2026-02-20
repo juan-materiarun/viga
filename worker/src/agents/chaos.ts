@@ -10,7 +10,7 @@
  */
 
 import crypto from 'crypto';
-import { getBrowser } from '../lib/browser';
+import { getBrowser, injectScripts, getActiveElements, getAccessibilityTree, getBodyText } from '../lib/browser';
 import { captureEvidence } from '../lib/evidence';
 import { callGroqJSON, createLLMContext, batchRankActions, analyzePageContext } from '../lib/llm';
 import { generatePlaywrightCode } from '../lib/codegen';
@@ -32,6 +32,7 @@ import {
 } from '../lib/actions';
 import { captureState, validateActionEffect } from '../lib/validators';
 import { SemanticIntent } from '../lib/fingerprint';
+import { registerState, recordTransition } from '../lib/journey'; // V5: Knowledge Graph
 
 
 const MAX_STEPS = 999;
@@ -157,145 +158,14 @@ async function waitForStableUI(page: any, timeout = 15000) {
     Logger.debug(`[STABILITY] Timeout waiting for stability. Proceeding anyway.`, 'SYS');
 }
 
-const CLIENT_SELECTOR_SCRIPT = `
-  (function() {
-    function getCssPath(element) {
-      if (element.id !== '') return '#' + element.id;
-      if (element === document.body) return element.tagName.toLowerCase();
-      var ix = 0;
-      var siblings = element.parentNode.childNodes;
-      for (var i = 0; i < siblings.length; i++) {
-        var sibling = siblings[i];
-        if (sibling === element) return getCssPath(element.parentNode) + ' > ' + element.tagName.toLowerCase() + ':nth-of-type(' + (ix + 1) + ')';
-        if (sibling.nodeType === 1 && sibling.tagName === element.tagName) ix++;
-      }
-      return null;
-    }
-    function getXPath(element) {
-      if (element.id !== '') return '//*[@id="' + element.id + '"]';
-      if (element === document.body) return '/html/body';
-      var ix = 0;
-      var siblings = element.parentNode.childNodes;
-      for (var i = 0; i < siblings.length; i++) {
-        var sibling = siblings[i];
-        if (sibling === element) return getXPath(element.parentNode) + '/' + element.tagName.toLowerCase() + '[' + (ix + 1) + ']';
-        if (sibling.nodeType === 1 && sibling.tagName === element.tagName) ix++;
-      }
-      return null;
-    }
-    window.getVigaSelector = getCssPath;
-    window.getVigaXPath = getXPath;
-  })();
-`;
 
-async function injectScripts(page: any) {
-    await page.addInitScript({ content: CLIENT_SELECTOR_SCRIPT });
-}
 
 /**
  * OPTIMIZED: Parallel Element Discovery
  * Scans all elements in parallel instead of sequentially
  * Performance: 3x faster than sequential scanning
  */
-async function getActiveElements(page: any): Promise<UIElement[]> {
-    return page.evaluate(() => {
-        const selectors = [
-            'button:not([disabled])',
-            'a[href]:not([disabled])',
-            'input:not([disabled]):not([type="hidden"])',
-            'textarea:not([disabled])',
-            '[role="button"]:not([disabled])',
-            '[role="link"]:not([disabled])',
-            'select:not([disabled])',
-            '[onclick]:not([disabled])'
-        ];
 
-        // Batch collect all elements
-        const allElements = selectors.flatMap(sel => Array.from(document.querySelectorAll(sel)));
-        const uniqueElements = Array.from(new Set(allElements));
-
-        // Parallel visibility/interactivity checks
-        return uniqueElements
-            .map((el, i) => {
-                if (!(el instanceof HTMLElement)) return null;
-
-                // Fast visibility check (no async needed)
-                const r = el.getBoundingClientRect();
-                const style = window.getComputedStyle(el);
-
-                // Filter out non-visible/non-interactive elements
-                if (r.width < 5 || r.height < 5 || style.visibility === 'hidden' || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || el.closest('[disabled]')) return null;
-
-                const placeholder = el.getAttribute('placeholder') || '';
-                const aria = el.getAttribute('aria-label') || '';
-                const title = el.getAttribute('title') || ''; // Capture title as tooltip
-                const name = el.getAttribute('name') || '';
-                const role = el.getAttribute('role') || '';
-                const type = el.getAttribute('type') || '';
-                const ariaPressed = el.getAttribute('aria-pressed') || '';
-                const ariaSelected = el.getAttribute('aria-selected') || '';
-                const checked = (el as HTMLInputElement).checked || false;
-
-                let labelText = '';
-                if (el.id) {
-                    const label = document.querySelector(`label[for="${el.id}"]`) as HTMLElement;
-                    if (label) labelText = label.innerText || label.textContent || '';
-                }
-                if (!labelText && el.closest('label')) {
-                    const label = el.closest('label') as HTMLElement;
-                    labelText = label?.innerText || label?.textContent || '';
-                }
-
-                // Enhanced Text Extraction for V3.2
-                let cleanText = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-
-                // If text is empty, look deeper (SVG titles, Image alts)
-                if (!cleanText) {
-                    const img = el.querySelector('img');
-                    if (img && img.alt) cleanText = img.alt;
-
-                    const svgTitle = el.querySelector('svg title');
-                    if (!cleanText && svgTitle) cleanText = svgTitle.textContent || '';
-                }
-
-                // @ts-ignore
-                let selector = window.getVigaSelector(el);
-                // @ts-ignore
-                const xpath = window.getVigaXPath(el);
-
-                if (el.id) selector = `#${el.id}`;
-                else if (name) selector = `${el.tagName.toLowerCase()}[name="${name}"]`;
-
-                // Truncate for safety
-                cleanText = cleanText.slice(0, 100);
-
-                // Hint composition: prioritized list of semantic signals
-                const hint = [labelText, placeholder, aria, title, name, role, cleanText].filter(Boolean).join(' | ');
-
-                return {
-                    i,
-                    tag: el.tagName.toLowerCase(),
-                    text: cleanText,
-                    hint: hint,
-                    selector,
-                    xpath,
-                    attributes: {
-                        type,
-                        name,
-                        id: el.id,
-                        role,
-                        ariaSelected,
-                        checked,
-                        'aria-label': aria,
-                        'aria-pressed': ariaPressed,
-                        placeholder,
-                        title // Add title to attributes
-                    }
-                };
-            })
-            .filter(Boolean) as UIElement[];
-    });
-}
 
 async function smartWaitForElements(page: any, suiteId: string): Promise<UIElement[]> {
     let elements = await getActiveElements(page);
@@ -327,22 +197,38 @@ function getActionType(element: UIElement): 'click' | 'type' {
 }
 
 
-// V3.2: Generación inteligente de datos
+// V4 UPGRADED: Generación inteligente de datos con detección de contexto semántico
 function generatePayload(element: UIElement, credentials?: any): string {
     const hint = (element.hint || '').toLowerCase();
     const type = (element.attributes?.type || '').toLowerCase();
     const name = (element.attributes?.name || '').toLowerCase();
     const label = (element.attributes?.['aria-label'] || '').toLowerCase();
+    const placeholder = (element.attributes?.placeholder || '').toLowerCase();
+    const tag = element.tag.toLowerCase();
 
-    const context = `${hint} ${name} ${label}`;
+    const context = `${hint} ${name} ${label} ${placeholder}`;
+
+    // ─── CÓDIGO / EDITORES (más específico → primero) ───
+    // Detecta si el campo pide código: HTML, CSS, JS, código fuente
+    const isCodeEditor = (
+        context.includes('html') || context.includes('css') || context.includes('javascript') ||
+        context.includes('js') || context.includes('código') || context.includes('code') ||
+        context.includes('snippet') || context.includes('fuente') || context.includes('source') ||
+        context.includes('pega') || context.includes('paste') ||
+        // También detectar por tag: si es un textarea con nada de contexto especial, es +probable que sea un editor
+        (tag === 'textarea' && (context.includes('anali') || context.includes('analyz')))
+    );
+    if (isCodeEditor) {
+        return '<div class="test">\n  <h1>VIGA Test</h1>\n  <p>Automated test payload</p>\n</div>';
+    }
 
     // 1. URLs
-    if (type === 'url' || context.includes('url') || context.includes('website') || context.includes('sitio')) {
+    if (type === 'url' || context.includes('url') || context.includes('website') || context.includes('sitio web') || context.includes('dominio')) {
         return 'https://viga.dev';
     }
 
     // 2. Emails
-    if (type === 'email' || context.includes('email') || context.includes('correo')) {
+    if (type === 'email' || context.includes('email') || context.includes('correo') || context.includes('mail')) {
         return credentials?.username || 'test@viga.dev';
     }
 
@@ -361,14 +247,22 @@ function generatePayload(element: UIElement, credentials?: any): string {
         return '2024-01-01';
     }
 
-    // 6. Búsqueda
+    // 6. Búsqueda / Nombre de app / Proyecto
     if (type === 'search' || context.includes('search') || context.includes('buscar')) {
         return 'test query';
+    }
+    if (context.includes('app') || context.includes('nombre') || context.includes('name') || context.includes('proyecto')) {
+        return 'Mi Aplicación Test';
     }
 
     // 7. Números
     if (type === 'number' || context.includes('amount') || context.includes('cantidad') || context.includes('edad')) {
         return '42';
+    }
+
+    // 8. Textarea genérico (sin otro contexto especial) → Descripción
+    if (tag === 'textarea') {
+        return 'Descripción de prueba generada por VIGA para validación automática de formularios.';
     }
 
     // Default
@@ -396,6 +290,12 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
     let lastStateHash: string = '';
     const executedInThisRun = new Set<string>();
     let stepsWithoutValue = 0; // Phase 4.2
+    const recentActionNames: string[] = []; // V4.4: Last 6 action names (for anti-repetition)
+
+    // V5: Journey Graph tracking
+    let currentJourneyStateId: string | undefined;
+    let lastJourneyStateId: string | undefined;
+    let lastJourneyAction: { id: string; intent: string } | undefined;
 
     // V3 EXPERIMENTAL: Global state tracking
     const globalStateActions = new Set<string>();
@@ -428,22 +328,49 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
             if (actionsExecuted === 0 || !lastStepId || (lastStateHash && stateHash !== lastStateHash && Math.random() < 0.3)) {
 
-                // V4.1: Enhanced Context (Visual + Textual)
-                const visualSummary = elements.slice(0, 15).map(e => `[${e.tag}] ${e.hint || e.text}`).join(', ');
+                // V4.1: Enhanced Context (Accessibility Tree + Fallback)
+                const axTree = await getAccessibilityTree(page).catch(() => null);
 
-                // Capture main body text (truncated) to give "reading" context
-                const bodyText = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 1000));
-                const contextPayload = `Visual: ${visualSummary}\nText: ${bodyText}`;
+                // Truncate tree to manageable size for LLM (15k chars) or use body text
+                const contextRaw = axTree ? JSON.stringify(axTree).slice(0, 15000) : (await getBodyText(page)).slice(0, 5000);
+                const contextPayload = `Visual: Accessibility Tree\nContext: ${contextRaw}`;
 
                 try {
-                    Logger.thought(`🗺️ Analizando contexto de página (Visual + Texto)...`, suiteId);
-                    // Track usage: Context payload + ~300 chars output
+                    Logger.thought(`🗺️ [CARTÓGRAFO] Analizando contexto (Accessibility Tree)...`, suiteId);
                     trackAICall(contextPayload.length + 500, 300);
+
                     const analysis: any = await analyzePageContext(llmCtx, currentUrl, pageTitle, contextPayload);
                     pageContext = `Página: ${analysis.page_type} | Objetivo: ${analysis.purpose}`;
                     strategy = analysis.strategy;
                     purpose = analysis.purpose;
-                    Logger.info(`🧠 Contexto entendido: ${pageContext} | Estrategia: ${strategy}`, suiteId);
+                    Logger.info(`🧠 [CARTÓGRAFO] ${pageContext} | Estrategia: ${strategy}`, suiteId);
+
+                    // V5: Register journey state in Knowledge Graph
+                    try {
+                        const keyElements = elements.slice(0, 10).map(el => ({
+                            role: el.attributes?.role || el.tag,
+                            text: (el.text || el.hint || '').slice(0, 80)
+                        }));
+                        const journeyState = await registerState(suiteId, currentUrl, pageTitle, keyElements, llmCtx);
+                        lastJourneyStateId = currentJourneyStateId;
+                        currentJourneyStateId = journeyState.id;
+
+                        // If we arrived here via an action, record the transition
+                        if (lastJourneyStateId && lastJourneyAction && lastJourneyStateId !== currentJourneyStateId) {
+                            await recordTransition(
+                                suiteId,
+                                lastJourneyStateId,
+                                currentJourneyStateId,
+                                lastJourneyAction.id,
+                                lastJourneyAction.intent,
+                                `Página cambió a: ${analysis.page_type || pageTitle}`,
+                                true
+                            ).catch(e => Logger.debug(`[V5] Transition error: ${e.message}`, suiteId));
+                            lastJourneyAction = undefined; // Reset after recording
+                        }
+                    } catch (e: any) {
+                        Logger.debug(`[V5] State registration error: ${e.message}`, suiteId);
+                    }
 
                     // V4.2: Respect WAIT Strategy
                     if (strategy.includes('ESPERAR') || strategy.includes('WAIT')) {
@@ -571,7 +498,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                             id: c.action.id,
                             name: c.action.canonical_name,
                             category: c.action.action_category
-                        })), pageContext, purpose);
+                        })), pageContext, purpose, undefined, recentActionNames.slice(-6));
 
                         if (rankResult) {
                             selected = untested.find(u => u.action.id === rankResult.selected_id);
@@ -623,6 +550,16 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     const stateActionKey = `${action.id}::${stateHash}`;
                     executedInThisRun.add(stateActionKey);
 
+                    // V4.4: Track recent action names for anti-repetition
+                    recentActionNames.push(action.canonical_name);
+                    if (recentActionNames.length > 8) recentActionNames.shift(); // Keep last 8
+
+                    // V5: Stage last action for Journey Graph transition recording
+                    lastJourneyAction = {
+                        id: action.id,
+                        intent: action.metadata?.semantic_intent || action.canonical_name
+                    };
+
                     const validation = await validateActionEffect(page, action, intent as SemanticIntent, beforeState);
                     const stepStatus = validation.passed ? 'success' : 'warning';
                     executionStatus = stepStatus; // Track for termination logic
@@ -667,13 +604,22 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                         }
                     }
 
-                    // Depth-aware rescan detection
-                    // Reuse beforeState captured at start of action block
+                    // Depth-aware rescan detection + Async action wait
                     await sleep(500); // Allow DOM to settle
 
                     const afterUrl = page.url();
                     const urlChanged = beforeState.url !== afterUrl;
                     const modalOpened = await page.locator('[role="dialog"], .modal, [aria-modal="true"]').count().catch(() => 0) > 0;
+
+                    // V4.3: If action triggered a large DOM change (+10 elements), wait for async results.
+                    // This handles cases like "Iniciar Auditoría" which trigger async data loads.
+                    const currentElementCount = await page.locator('*').count().catch(() => 0);
+                    const domDelta = Math.abs(currentElementCount - beforeState.elementCount);
+                    if (domDelta >= 10 && !urlChanged) {
+                        Logger.info(`⏳ [ASYNC WAIT] DOM cambió ${domDelta > 0 ? '+' : ''}${domDelta} elementos. Esperando carga async...`, suiteId);
+                        await sleep(4000); // Wait for async results (API calls, etc.)
+                        try { await page.waitForLoadState('networkidle', { timeout: 5000 }); } catch (_) { }
+                    }
 
                     if (urlChanged || modalOpened) {
                         requiresRescan = true;

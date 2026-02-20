@@ -4,6 +4,7 @@ import { JourneyState, JourneyTransition } from '../lib/journey';
 import { getBrowser, getBodyText } from '../lib/browser';
 import { captureEvidence } from '../lib/evidence';
 import { Cortex } from '../lib/cortex';
+import { Healer } from '../lib/healer';
 import crypto from 'crypto';
 
 interface GraphNode {
@@ -519,45 +520,21 @@ async function executeJourney(suiteId: string, journeyId: string) {
                     success = true;
                 }
                 else {
-                    // Try Strict Selector
-                    if (selector) {
-                        const loc = page.locator(selector).first();
-                        if (await loc.isVisible({ timeout: 3000 }).catch(() => false)) {
-                            if (step.action_type === 'click') await loc.click();
-                            if (step.action_type === 'fill') await loc.fill(step.payload || 'Test');
-                            success = true;
-                        }
-                    }
+                    // HEALER INTEGRATION: Robust interaction
+                    const healed = await Healer.find(page, selector, step.intent, suiteId);
 
-                    // Smart Fallback (if strict failed)
-                    if (!success) {
-                        const cleanText = step.intent.replace(/click|hacer clic|clic|pulsar|ingresar|escribir|type|fill|select|ir a|navegar a|en el botón|en el campo/gi, '').trim();
-                        console.log(`[ATLAS] ⚠️ Strict selector (${selector || 'MISSING'}) failed. Trying Smart Fallback for "${cleanText}"`);
-
-                        if (cleanText) {
-                            // Try text match (fuzzy)
-                            const textLoc = page.getByText(cleanText).first();
-                            if (await textLoc.isVisible({ timeout: 3000 }).catch(() => false)) {
-                                console.log(`[ATLAS] ✅ Smart Fallback found element by Text: "${cleanText}"`);
-                                if (step.action_type === 'click') {
-                                    await textLoc.click({ timeout: 2000 }).catch(e => console.log('Fallback click failed', e)); // Robust click
-                                    success = true;
-                                }
-                                if (step.action_type === 'fill') {
-                                    await textLoc.click().catch(() => { });
-                                    await page.keyboard.type(step.payload || 'Test');
-                                    success = true;
-                                }
-                            } else {
-                                // Try Role match (Button)
-                                const roleLoc = page.getByRole('button', { name: cleanText }).first();
-                                if (await roleLoc.isVisible({ timeout: 2000 }).catch(() => false)) {
-                                    console.log(`[ATLAS] ✅ Smart Fallback found element by Role: Button "${cleanText}"`);
-                                    await roleLoc.click();
-                                    success = true;
-                                }
-                            }
+                    if (healed.success && healed.element) {
+                        if (step.action_type === 'click') await healed.element.click();
+                        if (step.action_type === 'fill') {
+                            await healed.element.click().catch(() => { });
+                            await page.keyboard.type(step.payload || 'Test');
                         }
+                        success = true;
+                        if (healed.method !== 'strict') {
+                            console.log(`[ATLAS] 🩹 Auto-healed action using ${healed.method}`);
+                        }
+                    } else {
+                        console.log(`[ATLAS] ❌ Healer failed to find element for: "${step.intent}"`);
                     }
                 }
 

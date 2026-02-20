@@ -3,6 +3,8 @@ import { pollPendingJobs, updateJobStatus, Job, enforceJobTimeouts, claimJob } f
 import { runChaosAgent } from './agents/chaos';
 import { runScoutAgent } from './agents/scout';
 import { runAtlasAgent } from './agents/atlas';
+import { runStrikeAgent } from './agents/strike';
+import { runReplayAgent } from './agents/replay';
 import { Logger } from './lib/logger';
 
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || '3000', 10);
@@ -32,6 +34,14 @@ async function executeJob(job: Job) {
 
             case 'atlas':
                 await runAtlasAgent(job.id, job.suite_id);
+                break;
+
+            case 'strike':
+                await runStrikeAgent(job.id, job.url, job.suite_id, job.objective || 'Objective not specified', job.credentials);
+                break;
+
+            case 'replay':
+                await runReplayAgent(job.id, job.url, job.suite_id, job.steps || [], job.credentials);
                 break;
 
             default:
