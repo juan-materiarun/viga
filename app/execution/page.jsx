@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
     X, CheckCircle2, XCircle, Clock, Image as ImageIcon, Code, Globe, Hash, Copy,
@@ -16,7 +16,7 @@ import Loader from '../components/Loader';
 // import LiveBrowser from '../components/LiveBrowser'; // REMOVED: No more live streaming
 import ExecutionReplay from '../components/ExecutionReplay';
 
-export default function ExecutionRoomPage() {
+function ExecutionContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const { user } = useAuth();
@@ -375,5 +375,17 @@ export default function ExecutionRoomPage() {
                 </div>
             </div>
         </div>
+    );
+}
+
+export default function ExecutionRoomPage() {
+    return (
+        <Suspense fallback={
+            <div className="h-screen bg-[var(--bg-base)] flex items-center justify-center">
+                <Loader size="lg" />
+            </div>
+        }>
+            <ExecutionContent />
+        </Suspense>
     );
 }

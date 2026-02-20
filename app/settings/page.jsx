@@ -99,6 +99,13 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {/* Version Info */}
+        <div className="flex justify-end mb-2">
+          <span className="text-xs font-mono text-[var(--text-muted)] bg-[var(--bg-secondary)] px-2 py-1 rounded border border-[var(--border-color)]">
+            v5.0.0-beta
+          </span>
+        </div>
+
         {/* Apariencia */}
         <Card>
           <h2 className="text-lg font-bold text-[var(--text-primary)] mb-4 flex items-center gap-2">

@@ -1,6 +1,7 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useTheme } from '../contexts/ThemeContext';
@@ -33,6 +34,16 @@ export default function Sidebar() {
 
   const { collapsed, toggleSidebar } = useSidebar();
 
+  // Optimistic UI for immediate feedback
+  const [optimisticPath, setOptimisticPath] = useState(null);
+
+  // Sync optimistic state with actual router state when navigation completes
+  useEffect(() => {
+    setOptimisticPath(null);
+  }, [pathname]);
+
+  const currentPath = optimisticPath || pathname;
+
   const navigation = [
     { name: t('nav.dashboard'), href: '/dashboard', icon: LayoutDashboard },
     { name: t('nav.tests'), href: '/tests', icon: FlaskConical },
@@ -41,7 +52,7 @@ export default function Sidebar() {
     { name: t('nav.settings'), href: '/settings', icon: Settings },
   ];
 
-  const isActive = (href) => pathname === href || pathname?.startsWith(href + '/');
+  const isActive = (href) => currentPath === href || currentPath?.startsWith(href + '/');
 
   const displayName = profile?.company_name || user?.email?.split('@')[0]?.toUpperCase() || 'USER';
   const displayEmail = user?.email || 'user@viga.com';
@@ -62,7 +73,11 @@ export default function Sidebar() {
 
       {/* Logo Area */}
       <div className={`h-24 flex items-center border-b border-[var(--border-color)] overflow-hidden shrink-0 transition-all duration-300 ${collapsed ? 'justify-center' : 'justify-start pl-6'}`}>
-        <Link href="/dashboard" className="block transition-all duration-300">
+        <Link
+          href="/dashboard"
+          className="block transition-all duration-300"
+          onClick={() => setOptimisticPath('/dashboard')}
+        >
           <div className={`transition-all duration-300 relative ${collapsed ? 'w-10 h-10' : 'w-40 h-12'}`}>
             <Image
               src={theme === 'dark' ? '/VIGA-blacklogo.png' : '/VIGA-lightlogo.png'}
@@ -115,6 +130,7 @@ export default function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              onClick={() => setOptimisticPath(item.href)}
               title={collapsed ? item.name : ''}
               className={`
                 flex items-center h-10 rounded-lg transition-all duration-200 group relative

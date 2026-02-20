@@ -27,6 +27,7 @@ CREATE POLICY "Public Read Access" ON test_journeys FOR SELECT USING (true);
 
 -- Allow UPDATE on test_steps (for LocatorEditor)
 DROP POLICY IF EXISTS "Public Update Access" ON test_steps;
+.|
 CREATE POLICY "Public Update Access" ON test_steps FOR UPDATE USING (true);
 
 -- Allow INSERT for authenticated/anon if needed (optional, safer to restrict to service role usually, but enabling for now to be safe)

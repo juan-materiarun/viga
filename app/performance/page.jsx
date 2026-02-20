@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import Card from '../components/Card';
 import PerformanceChart from '@/components/PerformanceChart';
+import { Skeleton } from '@/components/ui/skeleton';
 
 
 export default function PerformancePage() {
@@ -160,7 +161,7 @@ export default function PerformancePage() {
                     <Card className="p-6 flex items-center justify-between bg-gradient-to-br from-[var(--bg-secondary)] to-[var(--bg-base)] border border-[var(--border-color)]">
                         <div>
                             <p className="text-xs uppercase font-bold text-[var(--text-muted)] mb-2">Websites Monitoreados</p>
-                            <h2 className="text-3xl font-bold font-mono">{sites.length}</h2>
+                            {isLoading ? <Skeleton className="h-9 w-16" /> : <h2 className="text-3xl font-bold font-mono">{sites.length}</h2>}
                         </div>
                         <div className="p-3 rounded-xl bg-blue-500/10 text-blue-500">
                             <Globe size={28} />
@@ -169,7 +170,9 @@ export default function PerformancePage() {
                     <Card className="p-6 flex items-center justify-between bg-gradient-to-br from-[var(--bg-secondary)] to-[var(--bg-base)] border border-[var(--border-color)]">
                         <div>
                             <p className="text-xs uppercase font-bold text-[var(--text-muted)] mb-2">Latencia Global (Promedio)</p>
-                            <h2 className="text-3xl font-bold font-mono">{stats.avg_global_latency}<span className="text-sm text-[var(--text-muted)] ml-1">ms</span></h2>
+                            {isLoading ? <Skeleton className="h-9 w-24" /> : (
+                                <h2 className="text-3xl font-bold font-mono">{stats.avg_global_latency}<span className="text-sm text-[var(--text-muted)] ml-1">ms</span></h2>
+                            )}
                         </div>
                         <div className="p-3 rounded-xl bg-amber-500/10 text-amber-500">
                             <Zap size={28} />
@@ -178,7 +181,7 @@ export default function PerformancePage() {
                     <Card className="p-6 flex items-center justify-between bg-gradient-to-br from-[var(--bg-secondary)] to-[var(--bg-base)] border border-[var(--border-color)]">
                         <div>
                             <p className="text-xs uppercase font-bold text-[var(--text-muted)] mb-2">Muestras Analizadas</p>
-                            <h2 className="text-3xl font-bold font-mono">{stats.total_runs}</h2>
+                            {isLoading ? <Skeleton className="h-9 w-20" /> : <h2 className="text-3xl font-bold font-mono">{stats.total_runs}</h2>}
                         </div>
                         <div className="p-3 rounded-xl bg-emerald-500/10 text-emerald-500">
                             <Activity size={28} />
@@ -207,8 +210,20 @@ export default function PerformancePage() {
 
                 {isLoading ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {[1, 2, 3].map(i => (
-                            <div key={i} className="h-64 rounded-2xl bg-[var(--bg-secondary)] animate-pulse" />
+                        {[1, 2, 3, 4, 5, 6].map(i => (
+                            <div key={i} className="h-64 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-color)] p-6 animate-pulse">
+                                <div className="flex justify-between mb-6">
+                                    <div className="flex gap-4">
+                                        <Skeleton className="w-12 h-12 rounded-xl" />
+                                        <div>
+                                            <Skeleton className="h-4 w-24 mb-2" />
+                                            <Skeleton className="h-3 w-32" />
+                                        </div>
+                                    </div>
+                                    <Skeleton className="h-6 w-20 rounded-full" />
+                                </div>
+                                <Skeleton className="h-32 w-full rounded-lg" />
+                            </div>
                         ))}
                     </div>
                 ) : sites.length === 0 ? (
@@ -281,3 +296,4 @@ export default function PerformancePage() {
         </div>
     );
 }
+

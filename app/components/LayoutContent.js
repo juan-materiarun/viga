@@ -12,24 +12,6 @@ export default function LayoutContent({ children }) {
   const pathname = usePathname();
   const { theme } = useTheme();
   const { loading: authLoading } = useAuth();
-
-  // Estado local para controlar el loader de transición
-  const [pageLoading, setPageLoading] = useState(false);
-
-  // Efecto para manejar navegación - sin delays artificiales
-  useEffect(() => {
-    // Activamos loader al cambiar de ruta
-    setPageLoading(true);
-
-    // Desactivamos inmediatamente (solo para transición visual suave)
-    const timer = setTimeout(() => {
-      setPageLoading(false);
-    }, 100);
-
-    return () => clearTimeout(timer);
-  }, [pathname]);
-
-  const showLoader = authLoading || pageLoading;
   const isPublicPage = pathname === '/' || pathname === '/login';
 
   const containerClasses = isPublicPage
@@ -41,7 +23,7 @@ export default function LayoutContent({ children }) {
 
       {/* Loader Overlay: Fixed para cubrir toda la pantalla incluyendo sidebar */}
       <AnimatePresence>
-        {showLoader && (
+        {authLoading && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -55,7 +37,7 @@ export default function LayoutContent({ children }) {
       </AnimatePresence>
 
       {/* Contenido Real */}
-      <AnimatePresence mode="wait">
+      <AnimatePresence mode="popLayout">
         <motion.div
           key={pathname}
           initial={{ opacity: 0 }}
@@ -67,6 +49,6 @@ export default function LayoutContent({ children }) {
           {children}
         </motion.div>
       </AnimatePresence>
-    </div>
+    </div >
   );
 }

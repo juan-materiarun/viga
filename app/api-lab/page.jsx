@@ -6,8 +6,8 @@ import {
     Send, Save, Plus, Folder
 } from 'lucide-react';
 import Button from '../components/Button';
-import Card from '../components/Card';
 import Loader from '../components/Loader';
+import { Skeleton } from '@/components/ui/skeleton';
 
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
 
@@ -15,7 +15,7 @@ export default function ApiLabPage() {
     // State
     const [collections, setCollections] = useState([]);
     const [selectedRequest, setSelectedRequest] = useState(null);
-    const [isLoading, setIsLoading] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
 
     // Request State
@@ -172,9 +172,21 @@ export default function ApiLabPage() {
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                        {isLoading && <div className="p-4"><Loader size="sm" /></div>}
+                        {isLoading && (
+                            <div className="space-y-4 p-2">
+                                <div className="space-y-2">
+                                    <Skeleton className="h-5 w-24" />
+                                    <Skeleton className="h-4 w-full" />
+                                    <Skeleton className="h-4 w-3/4" />
+                                </div>
+                                <div className="space-y-2">
+                                    <Skeleton className="h-5 w-24" />
+                                    <Skeleton className="h-4 w-full" />
+                                </div>
+                            </div>
+                        )}
 
-                        {collections.map(col => (
+                        {!isLoading && collections.map(col => (
                             <div key={col.id} className="mb-2">
                                 <div className="flex items-center gap-2 px-2 py-1 text-sm font-bold text-[var(--text-primary)] mb-1">
                                     <Folder size={14} className="text-yellow-500" />

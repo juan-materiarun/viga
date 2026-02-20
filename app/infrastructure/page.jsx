@@ -5,10 +5,10 @@ import { Server, RefreshCw, Zap, Activity } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import Card from '../components/Card';
 import Button from '../components/Button';
-import Loader from '../components/Loader';
 
 export default function InfrastructurePage() {
-  const [loading, setLoading] = useState(true);
+  // Initial loading is handled by Next.js loading.jsx
+  // We only track reloading state
   const [isReloading, setIsReloading] = useState(false);
   const [services, setServices] = useState([]);
 
@@ -16,14 +16,20 @@ export default function InfrastructurePage() {
     setIsReloading(true);
     try {
       const startDb = performance.now();
-      const { error: dbError } = await supabase.from('profiles').select('id').limit(1);
+      const dbPromise = supabase.from('profiles').select('id').limit(1);
+
+      const startApi = performance.now();
+      const apiPromise = fetch('https://api.groq.com/openai/v1/models', { mode: 'no-cors' }).catch(() => null);
+
+      const [dbResult, apiResult] = await Promise.all([dbPromise, apiPromise]);
+
       const endDb = performance.now();
       const dbLatency = Math.round(endDb - startDb);
 
-      const startApi = performance.now();
-      await fetch('https://api.groq.com/openai/v1/models', { mode: 'no-cors' }).catch(() => null);
       const endApi = performance.now();
       const apiLatency = Math.round(endApi - startApi);
+
+      const { error: dbError } = dbResult;
 
       const realData = [
         {
@@ -69,7 +75,6 @@ export default function InfrastructurePage() {
       console.error("Infra check failed", err);
     } finally {
       setIsReloading(false);
-      setLoading(false);
     }
   };
 
@@ -87,33 +92,6 @@ export default function InfrastructurePage() {
       default: return 'text-[var(--text-muted)]';
     }
   };
-
-  if (loading) {
-    return (
-      <div className="p-8 animate-fade-in">
-        <div className="max-w-6xl mx-auto">
-          <div className="flex justify-between items-center mb-8">
-            <div>
-              <div className="h-8 bg-[var(--border-color)] rounded w-48 mb-2 animate-pulse"></div>
-              <div className="h-4 bg-[var(--border-color)] rounded w-64 animate-pulse"></div>
-            </div>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {[1, 2, 3, 4].map(i => (
-              <div key={i} className="animate-pulse">
-                <div className="bg-[var(--bg-hover)] border border-[var(--border-color)] rounded-xl p-6">
-                  <div className="h-4 bg-[var(--border-color)] rounded w-20 mb-4"></div>
-                  <div className="h-6 bg-[var(--border-color)] rounded w-32 mb-2"></div>
-                  <div className="h-4 bg-[var(--border-color)] rounded w-24 mb-4"></div>
-                  <div className="h-2 bg-[var(--border-color)] rounded w-full"></div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="p-8 animate-fade-in">
@@ -141,42 +119,54 @@ export default function InfrastructurePage() {
 
         {/* Services Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          {services.map((service) => (
-            <Card key={service.name} className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className={`flex items-center gap-2 ${getStatusColor(service.status)}`}>
-                  <div className="w-2 h-2 rounded-full bg-current animate-pulse" />
-                  <span className="text-xs font-bold">{service.status.toUpperCase()}</span>
-                </div>
-                <span className="text-xs text-[var(--text-muted)]">{service.type}</span>
-              </div>
-
-              <h3 className="text-xl font-bold text-[var(--text-primary)] mb-1">
-                {service.name}
-              </h3>
-              <p className="text-sm text-[var(--text-muted)] mb-4">{service.spec}</p>
-
-              <div className="space-y-3">
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-[var(--text-muted)]">LATENCIA</span>
-                    <span className="text-[var(--text-primary)] font-bold">{service.load}</span>
+          {services.length > 0 ? (
+            services.map((service) => (
+              <Card key={service.name} className="p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div className={`flex items-center gap-2 ${getStatusColor(service.status)}`}>
+                    <div className="w-2 h-2 rounded-full bg-current animate-pulse" />
+                    <span className="text-xs font-bold">{service.status.toUpperCase()}</span>
                   </div>
-                  <div className="h-1 w-full rounded-full bg-[var(--bg-hover)] overflow-hidden">
-                    <div
-                      className="h-full bg-[var(--accent-primary)] transition-all duration-1000"
-                      style={{ width: `${service.progress}%` }}
-                    />
-                  </div>
+                  <span className="text-xs text-[var(--text-muted)]">{service.type}</span>
                 </div>
 
-                <div className="flex justify-between items-center pt-2 border-t border-[var(--border-color)]">
-                  <span className="text-xs text-[var(--text-muted)]">UPTIME</span>
-                  <span className="text-xs font-bold text-green-500">{service.uptime}</span>
+                <h3 className="text-xl font-bold text-[var(--text-primary)] mb-1">
+                  {service.name}
+                </h3>
+                <p className="text-sm text-[var(--text-muted)] mb-4">{service.spec}</p>
+
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-[var(--text-muted)]">LATENCIA</span>
+                      <span className="text-[var(--text-primary)] font-bold">{service.load}</span>
+                    </div>
+                    <div className="h-1 w-full rounded-full bg-[var(--bg-hover)] overflow-hidden">
+                      <div
+                        className="h-full bg-[var(--accent-primary)] transition-all duration-1000"
+                        style={{ width: `${service.progress}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-center pt-2 border-t border-[var(--border-color)]">
+                    <span className="text-xs text-[var(--text-muted)]">UPTIME</span>
+                    <span className="text-xs font-bold text-green-500">{service.uptime}</span>
+                  </div>
                 </div>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            ))
+          ) : (
+            // Fallback skeletons while client-side fetching is happening but page is mounted
+            [1, 2, 3, 4].map((i) => (
+              <Card key={i} className="p-6 bg-[var(--bg-secondary)]/50 animate-pulse">
+                <div className="h-4 w-20 bg-[var(--bg-hover)] rounded mb-4"></div>
+                <div className="h-6 w-32 bg-[var(--bg-hover)] rounded mb-2"></div>
+                <div className="h-4 w-24 bg-[var(--bg-hover)] rounded mb-4"></div>
+                <div className="h-2 w-full bg-[var(--bg-hover)] rounded"></div>
+              </Card>
+            ))
+          )}
         </div>
 
         {/* Footer */}

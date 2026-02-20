@@ -401,6 +401,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
     const globalStateActions = new Set<string>();
     let requiresRescan = false;
     let currentGlobalState: Record<string, string> = {}; // { theme: 'dark', lang: 'es' }
+    let consecutiveWaits = 0; // V4.3: Prevent infinite waiting loops
 
     try {
         await injectScripts(page);
@@ -446,9 +447,19 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                     // V4.2: Respect WAIT Strategy
                     if (strategy.includes('ESPERAR') || strategy.includes('WAIT')) {
-                        Logger.info(`⏳ Estrategia dice ESPERAR. Pausando 5s para estabilidad...`, suiteId);
-                        await sleep(5000); // Explicit wait
-                        continue; // Restart loop to re-scan
+                        consecutiveWaits++;
+
+                        if (consecutiveWaits >= 6) {
+                            Logger.warn(`⚠️ Infinite wait detected (${consecutiveWaits} cycles). Forcing interaction to break loop.`, suiteId);
+                            consecutiveWaits = 0; // Reset
+                            // Fall through to interaction logic...
+                        } else {
+                            Logger.info(`⏳ Estrategia dice ESPERAR. Pausando 5s para estabilidad... (${consecutiveWaits}/6)`, suiteId);
+                            await sleep(5000); // Explicit wait
+                            continue; // Restart loop to re-scan
+                        }
+                    } else {
+                        consecutiveWaits = 0; // Reset on normal strategy
                     }
 
                 } catch (e) {
