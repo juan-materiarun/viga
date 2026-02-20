@@ -2,7 +2,7 @@ import { supabase, updateJobProgress, createLog } from '../lib/supabase';
 import { createLLMContext, callGroqJSON } from '../lib/llm';
 import { JourneyState, JourneyTransition } from '../lib/journey';
 import { getBrowser, getBodyText } from '../lib/browser';
-import { captureEvidence } from '../lib/evidence';
+import { captureEvidence, waitForUISettled } from '../lib/evidence';
 import { Cortex } from '../lib/cortex';
 import { Healer } from '../lib/healer';
 import crypto from 'crypto';
@@ -472,7 +472,7 @@ async function executeJourney(suiteId: string, journeyId: string) {
         // Only navigate if first step is NOT a navigation step to the same URL
         if (steps[0].action_type !== 'navigate') {
             await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
-            await page.waitForTimeout(2000);
+            await waitForUISettled(page, 500, 4000);
         }
 
         let successCount = 0;
@@ -510,6 +510,7 @@ async function executeJourney(suiteId: string, journeyId: string) {
             }
 
             // 3. Execution Logic with Fallbacks
+            let evidencePromise: Promise<{ screenshotUrl: string }> | null = null;
             try {
                 let success = false;
 
@@ -538,16 +539,17 @@ async function executeJourney(suiteId: string, journeyId: string) {
                     }
                 }
 
-                await page.waitForTimeout(1000); // Visual effect pause
+                // TURBO: Adaptive wait resolves when DOM settles
+                await waitForUISettled(page, 400, 3000);
 
-                // 4. Capture Evidence (Success or Fail)
-                // Always capture evidence now, even if NO selector
-                const evidence = await captureEvidence(page, suiteId, execStepId, false);
+                // 4. Capture Evidence (Success or Fail) - Background fire-and-forget
+                evidencePromise = captureEvidence(page, suiteId, execStepId, false).catch(() => ({ screenshotUrl: '' }));
 
                 if (success) {
+                    const evidence = await evidencePromise;
                     await supabase.from('test_steps').update({
                         status: 'success',
-                        screenshot_url: evidence.screenshotUrl
+                        screenshot_url: evidence?.screenshotUrl || ''
                     }).eq('id', execStepId);
 
                     // VERIFICATION (The Judge) ⚖️
@@ -573,10 +575,11 @@ async function executeJourney(suiteId: string, journeyId: string) {
                     }
                 } else {
                     await createLog(suiteId, `⚠️ No se pudo ejecutar: ${step.intent}`, 'warning');
+                    const evidence = evidencePromise ? await evidencePromise : null;
                     await supabase.from('test_steps').update({
                         status: 'failed',
                         expected_result: `Failed to interact. Key: "${step.intent}". Smart Fallback failed.`,
-                        screenshot_url: evidence.screenshotUrl
+                        screenshot_url: evidence?.screenshotUrl || ''
                     }).eq('id', execStepId);
 
                     break;
@@ -584,13 +587,13 @@ async function executeJourney(suiteId: string, journeyId: string) {
 
             } catch (e: any) {
                 console.error(`[ATLAS] Exec Error: ${e.message}`);
-                // Try capture one last time
-                const evidence = await captureEvidence(page, suiteId, execStepId, false).catch(() => ({ screenshotUrl: null }));
+                // Try capture one last time if the promise didn't start or we want fresh error screen
+                const evidence = await (evidencePromise || captureEvidence(page, suiteId, execStepId, false).catch(() => ({ screenshotUrl: '' })));
 
                 await supabase.from('test_steps').update({
                     status: 'failed',
                     expected_result: `Exception: ${e.message}`,
-                    screenshot_url: evidence.screenshotUrl
+                    screenshot_url: evidence?.screenshotUrl || ''
                 }).eq('id', execStepId);
                 break;
             }

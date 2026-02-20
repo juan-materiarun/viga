@@ -5,7 +5,7 @@ import { createLLMContext } from '../lib/llm';
 import { Cortex } from '../lib/cortex';
 import { Healer } from '../lib/healer';
 import { getBrowser, getBodyText, injectScripts, getActiveElements, getAccessibilityTree } from '../lib/browser';
-import { captureEvidence } from '../lib/evidence';
+import { captureEvidence, waitForUISettled } from '../lib/evidence';
 // import { getActiveElements } from '../lib/fingerprint'; // Removed
 
 export async function runStrikeAgent(
@@ -103,7 +103,7 @@ export async function runStrikeAgent(
                 }
 
                 actionsExecuted++;
-                await page.waitForTimeout(2000); // Wait for effect
+                // Per user request: stabilize 1-2s and capture before planning next move
                 await captureEvidence(page, suiteId, `strike_step_${actionsExecuted}`, false);
 
             } else {

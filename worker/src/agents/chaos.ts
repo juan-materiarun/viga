@@ -11,7 +11,7 @@
 
 import crypto from 'crypto';
 import { getBrowser, injectScripts, getActiveElements, getAccessibilityTree, getBodyText } from '../lib/browser';
-import { captureEvidence } from '../lib/evidence';
+import { captureEvidence, waitForUISettled } from '../lib/evidence';
 import { callGroqJSON, createLLMContext, batchRankActions, analyzePageContext } from '../lib/llm';
 import { generatePlaywrightCode } from '../lib/codegen';
 import { supabase, updateJobProgress } from '../lib/supabase';
@@ -25,7 +25,9 @@ import {
 } from '../lib/fingerprint';
 import {
     UIAction,
-    findOrCreateAction,
+    buildActionCache,
+    findOrCreateActionCached,
+    flushActionCache,
     hasActionBeenExecuted,
     recordActionExecution,
     prioritizeActions
@@ -86,15 +88,10 @@ async function recordStep(
 ): Promise<string | null> {
     const stepId = crypto.randomUUID();
 
-    let evidence: { screenshotUrl: string } = { screenshotUrl: '' };
-    try {
-        if (!page.isClosed()) {
-            const captured = await captureEvidence(page, suiteId, stepId, false);
-            evidence = { screenshotUrl: captured.screenshotUrl };
-        }
-    } catch (e: any) {
-        Logger.warn(`Evidence capture failed: ${e.message}`, suiteId);
-    }
+    // TURBO: evidence capture and DB insert fire in parallel
+    const evidencePromise: Promise<{ screenshotUrl: string }> = page.isClosed()
+        ? Promise.resolve({ screenshotUrl: '' })
+        : captureEvidence(page, suiteId, stepId, false).catch(() => ({ screenshotUrl: '' }));
 
     const payload: any = {
         id: stepId,
@@ -102,24 +99,35 @@ async function recordStep(
         title: title,
         expected_result: description,
         status: status,
-        screenshot_url: evidence.screenshotUrl,
+        screenshot_url: '', // will be patched after evidence resolves
         selector: actionData?.selector,
         xpath: actionData?.xpath,
         action_type: actionData?.actionType,
         action_payload: actionData?.payload
     };
 
-    if (parentStepId) {
-        payload.parent_step_id = parentStepId;
+    if (parentStepId) payload.parent_step_id = parentStepId;
+
+    // Insert step immediately (without screenshot URL) so frontend sees it FAST
+    const insertPromise = supabase.from('test_steps').insert(payload).then(async ({ error }) => {
+        if (error && error.code === '42703') {
+            delete payload.parent_step_id;
+            await supabase.from('test_steps').insert(payload);
+        }
+    });
+
+    // Wait for both in parallel, then patch the screenshot URL
+    const [evidence] = await Promise.all([evidencePromise, insertPromise]);
+
+    if (evidence.screenshotUrl) {
+        // Fire-and-forget patch — don't block the agent loop
+        supabase.from('test_steps')
+            .update({ screenshot_url: evidence.screenshotUrl })
+            .eq('id', stepId)
+            .then();
     }
 
-    const { error } = await supabase.from('test_steps').insert(payload);
-    if (error && error.code === '42703') {
-        delete payload.parent_step_id;
-        await supabase.from('test_steps').insert(payload);
-    }
-
-    return error ? null : stepId;
+    return stepId;
 }
 
 async function waitForStableUI(page: any, timeout = 15000) {
@@ -316,9 +324,11 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             const pageTitle = await page.title().catch(() => 'Unknown');
             if (elements.length === 0) break;
 
-            // Phase 3: "El Cartógrafo" analyzes only on new URL/State
-            // We use elements count and title to hash
             const stateHash = computeStateHash(currentUrl, elements.length, pageTitle, currentGlobalState);
+
+            // TURBO: Build action cache once per scan cycle (1 DB fetch for all elements)
+            const urlPattern = normalizeUrl(currentUrl);
+            const actionCache = await buildActionCache(urlPattern);
 
             // V4.0: CEREBRO CENTRAL - "El Cartógrafo"
             // Solo analizamos si cambia la URL o es el inicio (para ahorrar tokens)
@@ -405,11 +415,9 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             const snapshotRows: any[] = []; // V3 Phase 3
 
             for (const el of elements) {
-                // Pass scanStartTime to prevent fuzzy matching against actions created within this loop
-                // Pass actionIdsOnScreen to prevent mapping multiple elements to the same action ID in the same scan
-                const action = await findOrCreateAction(el, currentUrl, getActionType(el), scanStartTime, actionIdsOnScreen);
+                // TURBO: findOrCreateActionCached — all in-memory, no DB calls inside loop
+                const action = findOrCreateActionCached(el, currentUrl, getActionType(el), actionCache);
 
-                // DIAGNOSTIC LOG (Requested by USER)
                 const fingerprint = computeFingerprint(el, currentUrl);
                 Logger.debug(`[SCAN] fp=${fingerprint.substring(0, 8)} action=${action.id.substring(0, 8)}`, suiteId);
 
@@ -425,29 +433,28 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     });
                 }
 
-                actionIdsOnScreen.add(action.id);
+                actionCache.usedIds.add(action.id);
 
                 const key = `${action.id}::${stateHash}`;
-
-                // INVARIANT 1: Runtime Set Check (Cyclical loop prevention)
                 const executedInRuntime = executedInThisRun.has(key);
-
-                // INVARIANT 2: Database Persistence Check (State persistence)
                 const executedInDB = await hasActionBeenExecuted(suiteId, action.id, stateHash);
-
-                // V3 Logic: Global State actions are always valid candidates if they aren't "burned" or we want to re-toggle
-                // But generally we should prioritize UNTESTED.
                 const isGlobalState = action.action_category === 'GLOBAL_STATE';
 
                 if (!executedInRuntime && !executedInDB) {
                     untested.push({ element: el, action });
                 } else if (isGlobalState && CHAOS_V3) {
-                    // Assuming we might want to re-execute global state to switch back? 
-                    // For now, let's stick to "not executed in this run" for global state to avoid infinite flapping
                     if (!executedInRuntime) untested.push({ element: el, action });
                 } else {
-                    // Ensure runtime set is in sync with DB if we found it in DB
                     if (executedInDB) executedInThisRun.add(key);
+                }
+            }
+
+            // TURBO: Flush new actions to DB in a single batch write
+            const idMap = await flushActionCache(actionCache);
+            // Resolve provisional IDs so recordActionExecution works correctly
+            for (const u of untested) {
+                if (u.action.id.startsWith('pending::')) {
+                    u.action.id = idMap.get(u.action.id) || u.action.id;
                 }
             }
 
@@ -546,7 +553,8 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     }
 
                     actionsExecuted++;
-                    await sleep(1500); // Wait for reaction
+                    // TURBO: Adaptive wait — resolves when DOM settles (typically ~100-350ms vs fixed 1500ms)
+                    await waitForUISettled(page, 350, 3000);
                     const stateActionKey = `${action.id}::${stateHash}`;
                     executedInThisRun.add(stateActionKey);
 
@@ -604,8 +612,8 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                         }
                     }
 
-                    // Depth-aware rescan detection + Async action wait
-                    await sleep(500); // Allow DOM to settle
+                    // TURBO: Adaptive settle — replaces fixed sleep(500)
+                    await waitForUISettled(page, 200, 1500);
 
                     const afterUrl = page.url();
                     const urlChanged = beforeState.url !== afterUrl;
@@ -617,8 +625,8 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     const domDelta = Math.abs(currentElementCount - beforeState.elementCount);
                     if (domDelta >= 10 && !urlChanged) {
                         Logger.info(`⏳ [ASYNC WAIT] DOM cambió ${domDelta > 0 ? '+' : ''}${domDelta} elementos. Esperando carga async...`, suiteId);
-                        await sleep(4000); // Wait for async results (API calls, etc.)
-                        try { await page.waitForLoadState('networkidle', { timeout: 5000 }); } catch (_) { }
+                        // TURBO: Adaptive wait replaces fixed sleep(4000)
+                        await waitForUISettled(page, 500, 5000);
                     }
 
                     if (urlChanged || modalOpened) {

@@ -75,14 +75,14 @@ export default function LandingPage() {
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
               </span>
               <span className="text-xs font-bold text-purple-600 tracking-[0.2em]">
-                VIGA V7.0 LIVE
+                VIGA V8.0 LIVE
               </span>
             </div>
 
             <h1 className="text-6xl md:text-8xl lg:text-9xl font-bold tracking-tight text-[var(--text-primary)] mb-8 leading-[0.9]">
               AUTONOMOUS <br />
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-[var(--text-primary)] via-purple-600 to-indigo-600 animate-gradient-x">
-                QA AGENTS
+                QA AGENTS FOR E2E TESTING
               </span>
             </h1>
 

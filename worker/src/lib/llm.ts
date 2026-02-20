@@ -27,9 +27,9 @@ export function createLLMContext(tier: ModelTier = 'smart'): LLMContext {
 
     // Model selection based on tier
     const models: Record<ModelTier, string> = {
-        fast: 'llama-3.1-8b-instant',      // Fast, cheap, simple tasks
-        smart: 'llama-3.3-70b-versatile',  // Balanced, most tasks
-        premium: 'llama-3.3-70b-versatile' // Complex reasoning (fallback to same for now)
+        fast: 'llama-3.1-8b-instant',      // Fast responses, page analysis, simple decisions
+        smart: 'llama-3.3-70b-versatile',  // Complex reasoning, action ranking
+        premium: 'llama-3.3-70b-versatile' // Future: deepseek or claude
     };
 
     return {
@@ -60,7 +60,8 @@ export async function callGroqJSON(
     ctx: LLMContext,
     system: string,
     user: string,
-    retries = 5
+    retries = 5,
+    modelOverride?: string  // TURBO: caller can specify a different model without creating a new context
 ): Promise<any> {
 
     if (Date.now() < ctx.cooldownUntil) {
@@ -69,11 +70,13 @@ export async function callGroqJSON(
         await sleep(waitTime);
     }
 
+    const model = modelOverride || ctx.model;
+
     try {
         const groq = getClient(ctx);
 
         const res = await groq.chat.completions.create({
-            model: ctx.model, // Use model from context
+            model,
             temperature: 0.2,
             response_format: { type: 'json_object' },
             messages: [
@@ -214,7 +217,8 @@ ${candidates.map(c => `- [${c.id}] (${c.category}) ${c.name}`).join('\n')}
 
 Formato de Respuesta JSON: { "selected_id": "uuid", "reason": "proceso de pensamiento en español", "suggested_payload": "valor para input (opcional)" }`;
 
-    const res = await callGroqJSON(ctx, system, user);
+    // TURBO: batchRankActions is complex multi-step reasoning → always use smart (70B) model
+    const res = await callGroqJSON(ctx, system, user, 5, 'llama-3.3-70b-versatile');
     return res;
 }
 
@@ -251,5 +255,6 @@ export async function analyzePageContext(
 
     const user = "Analiza el estado actual de la página.";
 
-    return await callGroqJSON(ctx, system, user) || { page_type: 'DESCONOCIDO', purpose: 'Explorar', strategy: 'Exploración genérica' };
+    // TURBO: page context analysis is pattern-matching, not reasoning → use fast 8B model
+    return await callGroqJSON(ctx, system, user, 5, 'llama-3.1-8b-instant') || { page_type: 'DESCONOCIDO', purpose: 'Explorar', strategy: 'Exploración genérica' };
 }
