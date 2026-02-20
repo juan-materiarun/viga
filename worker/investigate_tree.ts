@@ -2,12 +2,12 @@
 import { chromium } from 'playwright';
 
 (async () => {
-    const browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
 
-    // Navigate to a complex page to test the tree
-    console.log('Navigating to example.com...');
-    await page.setContent(`
+  // Navigate to a complex page to test the tree
+  console.log('Navigating to example.com...');
+  await page.setContent(`
     <html>
       <body>
         <header>
@@ -33,11 +33,13 @@ import { chromium } from 'playwright';
     </html>
   `);
 
-    console.log('Capturing accessibility snapshot...');
-    const snapshot = await page.accessibility.snapshot();
+  console.log('Capturing accessibility snapshot...');
+  // page.accessibility was removed in Playwright v1.41+ — use CDP instead
+  const client = await page.context().newCDPSession(page);
+  const { nodes } = await client.send('Accessibility.getFullAXTree');
 
-    console.log('--- ACCESSIBILITY TREE ---');
-    console.log(JSON.stringify(snapshot, null, 2));
+  console.log('--- ACCESSIBILITY TREE ---');
+  console.log(JSON.stringify(nodes, null, 2));
 
-    await browser.close();
+  await browser.close();
 })();

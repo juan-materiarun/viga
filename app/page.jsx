@@ -75,7 +75,7 @@ export default function LandingPage() {
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
               </span>
               <span className="text-xs font-bold text-purple-600 tracking-[0.2em]">
-                VIGA V6.0 LIVE
+                VIGA V7.0 LIVE
               </span>
             </div>
 

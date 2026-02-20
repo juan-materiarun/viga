@@ -40,6 +40,22 @@ export default function DashboardPage() {
     return acc;
   }, []).slice(0, 10);
 
+  // Auto-cleanup: mark stale `running` suites (>10 min old) as `failed`
+  // Happens when worker crashes or Vercel times out without updating DB status
+  useEffect(() => {
+    if (!user) return;
+    const cleanupStaleRuns = async () => {
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const { error } = await supabase
+        .from('test_suites')
+        .update({ status: 'failed' })
+        .eq('status', 'running')
+        .lt('created_at', tenMinutesAgo);
+      if (!error) mutateRecent();
+    };
+    cleanupStaleRuns();
+  }, [user]);
+
   useEffect(() => {
     if (user) refreshProfile();
   }, [user, status]);
