@@ -1,0 +1,109 @@
+{
+  "jobs": {
+    "columns": [
+      "id",
+      "suite_id",
+      "user_id",
+      "job_type",
+      "status",
+      "url",
+      "goal",
+      "credentials",
+      "steps",
+      "progress",
+      "result",
+      "error",
+      "created_at",
+      "started_at",
+      "completed_at",
+      "updated_at"
+    ]
+  },
+  "test_steps": {
+    "columns": [
+      "id",
+      "suite_id",
+      "action_type",
+      "selector",
+      "dna_html",
+      "step_order",
+      "created_at",
+      "expected_result",
+      "status",
+      "error_message",
+      "screenshot_url",
+      "title",
+      "element_id",
+      "xpath",
+      "action_payload",
+      "parent_step_id",
+      "step_number",
+      "journey_id",
+      "screenshot_start_url",
+      "screenshot_end_url",
+      "description"
+    ]
+  },
+  "test_suites": {
+    "columns": [
+      "id",
+      "name",
+      "base_url",
+      "user_id",
+      "created_at",
+      "system_context",
+      "test_credentials",
+      "duration_ms",
+      "total_steps",
+      "avg_response_time",
+      "critical_failures",
+      "status",
+      "report_data",
+      "is_regression",
+      "narrative",
+      "objective",
+      "video_url",
+      "mode",
+      "generated_code"
+    ]
+  },
+  "test_logs": {
+    "columns": [
+      "id",
+      "suite_id",
+      "message",
+      "level",
+      "timestamp"
+    ]
+  },
+  "ui_actions": {
+    "columns": [
+      "id",
+      "fingerprint",
+      "role",
+      "aria_label",
+      "aria_pressed",
+      "input_type",
+      "tag",
+      "url_pattern",
+      "container_context",
+      "canonical_name",
+      "selectors",
+      "first_seen_at",
+      "last_seen_at",
+      "execution_count",
+      "dom_delta_signature",
+      "metadata",
+      "action_category"
+    ]
+  },
+  "action_executions": {
+    "columns": [
+      "id",
+      "suite_id",
+      "action_id",
+      "state_hash",
+      "executed_at"
+    ]
+  }
+}

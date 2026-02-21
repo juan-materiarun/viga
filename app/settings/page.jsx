@@ -102,7 +102,7 @@ export default function SettingsPage() {
         {/* Version Info */}
         <div className="flex justify-end mb-2">
           <span className="text-xs font-mono text-[var(--text-muted)] bg-[var(--bg-secondary)] px-2 py-1 rounded border border-[var(--border-color)]">
-            v8.0.0-beta
+            v9.0.0-beta
           </span>
         </div>
 

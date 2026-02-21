@@ -10,7 +10,7 @@
  */
 
 import crypto from 'crypto';
-import { getBrowser, injectScripts, getActiveElements, getAccessibilityTree, getBodyText } from '../lib/browser';
+import { getBrowser, injectScripts, getActiveElements, getAccessibilityTree, getBodyText, scrollPage, isAtBottom, isPageScrollable } from '../lib/browser';
 import { captureEvidence, waitForUISettled } from '../lib/evidence';
 import { callGroqJSON, createLLMContext, batchRankActions, analyzePageContext } from '../lib/llm';
 import { generatePlaywrightCode } from '../lib/codegen';
@@ -21,7 +21,8 @@ import {
     computeFingerprint,
     computeStateHash,
     generateCanonicalName,
-    normalizeUrl
+    normalizeUrl,
+    inferIntent
 } from '../lib/fingerprint';
 import {
     UIAction,
@@ -35,6 +36,7 @@ import {
 import { captureState, validateActionEffect } from '../lib/validators';
 import { SemanticIntent } from '../lib/fingerprint';
 import { registerState, recordTransition } from '../lib/journey'; // V5: Knowledge Graph
+import { SemanticPayloadGenerator, ContextEnvelope } from '../lib/payload';
 
 
 const MAX_STEPS = 999;
@@ -66,6 +68,12 @@ const MAX_ACTIONS = 50;
 const MAX_LLM_CALLS = 15;
 const STABILITY_THRESHOLD = 3;
 
+// Protocol V1 Constants
+const CONFIDENCE_THRESHOLD = 0.85;
+const VALIDATED_CONFIDENCE = 0.90;
+const MAX_GENERIC_TEXT_PER_PAGE = 3;
+const MAX_REGENERATION_ATTEMPTS = 1;
+
 // V3 EXPERIMENTAL (Feature Flag)
 const CHAOS_V3 = true; // permanent v3 activation
 const CHAOS_REPLAY_MODE = process.env.CHAOS_REPLAY_MODE === 'true' || false;
@@ -76,6 +84,8 @@ async function recordStep(
     title: string,
     status: 'success' | 'failed' | 'running' | 'warning',
     description: string = '',
+    expectedResult: string = '',
+    actualResult: string = '',
     actionData?: {
         selector?: string,
         xpath?: string,
@@ -87,45 +97,81 @@ async function recordStep(
     parentStepId?: string
 ): Promise<string | null> {
     const stepId = crypto.randomUUID();
+    console.log(`[DB] 📝 Recording step: "${title}" (ID: ${stepId.slice(0, 8)}) for Suite: ${suiteId}`);
 
-    // TURBO: evidence capture and DB insert fire in parallel
-    const evidencePromise: Promise<{ screenshotUrl: string }> = page.isClosed()
+    // TURBO: capture screenshot
+    const evidencePromise = page.isClosed()
         ? Promise.resolve({ screenshotUrl: '' })
         : captureEvidence(page, suiteId, stepId, false).catch(() => ({ screenshotUrl: '' }));
 
+    // Prepare payload with ALL columns we'd like to have
     const payload: any = {
         id: stepId,
         suite_id: suiteId,
         title: title,
-        expected_result: description,
         status: status,
-        screenshot_url: '', // will be patched after evidence resolves
+        expected_result: expectedResult || description,
+        description: actualResult || description,
+        observation: actualResult || description, // Try both description and observation
+        action_type: actionData?.actionType,
         selector: actionData?.selector,
         xpath: actionData?.xpath,
-        action_type: actionData?.actionType,
-        action_payload: actionData?.payload
+        action_payload: actionData?.payload,
+        action_id: actionData?.actionId,
+        validation_result: actionData?.validationResult,
+        screenshot_url: '',
+        step_number: 0 // Will be handled by DB or sequence
     };
 
     if (parentStepId) payload.parent_step_id = parentStepId;
 
-    // Insert step immediately (without screenshot URL) so frontend sees it FAST
-    const insertPromise = supabase.from('test_steps').insert(payload).then(async ({ error }) => {
-        if (error && error.code === '42703') {
-            delete payload.parent_step_id;
-            await supabase.from('test_steps').insert(payload);
+    // Self-Healing Insertion Loop
+    let attempt = 0;
+    let success = false;
+    let currentPayload = { ...payload };
+
+    while (!success && attempt < 5) {
+        const { error } = await supabase.from('test_steps').insert(currentPayload);
+
+        if (!error) {
+            success = true;
+            console.log(`[DB] ✅ Step "${title}" saved successfully on attempt ${attempt + 1}`);
+        } else {
+            console.error(`[DB] ❌ Insert failed (Attempt ${attempt + 1}):`, error.message, error.hint);
+
+            // SELF-HEALING: Identify offensive column and remove it
+            if (error.code === 'PGRST204' || error.message.includes('column')) {
+                // Extract column name from error message (e.g. "Could not find the 'observation' column")
+                const match = error.message.match(/column "(.+?)"/i) || error.message.match(/'(.+?)' column/i);
+                const offendingColumn = match ? match[1] : null;
+
+                if (offendingColumn && currentPayload[offendingColumn] !== undefined) {
+                    console.warn(`[DB] 🛡️ Healing: Removing offending column '${offendingColumn}' and retrying...`);
+                    delete currentPayload[offendingColumn];
+                } else {
+                    // If we can't find the column, start stripping "risky" ones blindly
+                    const riskyColumns = ['observation', 'action_id', 'validation_result', 'xpath', 'action_payload', 'parent_step_id', 'screenshot_url'];
+                    const columnToRemove = riskyColumns[attempt];
+                    if (columnToRemove) {
+                        console.warn(`[DB] 🛡️ Blind Healing: Removing '${columnToRemove}' and retrying...`);
+                        delete currentPayload[columnToRemove];
+                    }
+                }
+            } else {
+                // Other error (Foreign key, etc.)
+                console.error(`[DB] 🛑 Terminal error inserting step: ${error.message}`);
+                break;
+            }
+        }
+        attempt++;
+    }
+
+    // Patch screenshot later if it resolves
+    evidencePromise.then(evidence => {
+        if (evidence.screenshotUrl) {
+            supabase.from('test_steps').update({ screenshot_url: evidence.screenshotUrl }).eq('id', stepId).then();
         }
     });
-
-    // Wait for both in parallel, then patch the screenshot URL
-    const [evidence] = await Promise.all([evidencePromise, insertPromise]);
-
-    if (evidence.screenshotUrl) {
-        // Fire-and-forget patch — don't block the agent loop
-        supabase.from('test_steps')
-            .update({ screenshot_url: evidence.screenshotUrl })
-            .eq('id', stepId)
-            .then();
-    }
 
     return stepId;
 }
@@ -144,7 +190,7 @@ async function waitForStableUI(page: any, timeout = 15000) {
 
             // Check for text indicating processing
             const bodyText = document.body.innerText.toLowerCase();
-            const textLoading = bodyText.match(/cargando\.\.\.|loading\.\.\.|procesando\.\.\.|iniciando\.\.\.|wait\.\.\.|esperando\.\.\./);
+            const textLoading = bodyText.match(/cargando\.\.\.|loading\.\.\.|procesando\.\.\.|iniciando\.\.\.|wait\.\.\.|esperando\.\.\.|auditando\.\.\.|analizando\.\.\.|generando\.\.\./);
 
             // Check for disabled submit buttons (often indicates loading)
             const disabledSubmit = document.querySelector('button[type="submit"][disabled], button.is-loading');
@@ -227,7 +273,12 @@ function generatePayload(element: UIElement, credentials?: any): string {
         (tag === 'textarea' && (context.includes('anali') || context.includes('analyz')))
     );
     if (isCodeEditor) {
-        return '<div class="test">\n  <h1>VIGA Test</h1>\n  <p>Automated test payload</p>\n</div>';
+        return `// VIGA Automated Audit Snippet
+function calculateSecurityScore(metrics) {
+  const base = metrics.vulnerabilities === 0 ? 100 : 50;
+  return Math.min(100, base + metrics.performance / 2);
+}
+console.log("Audit test initialized...");`;
     }
 
     // 1. URLs
@@ -305,6 +356,11 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
     let lastJourneyStateId: string | undefined;
     let lastJourneyAction: { id: string; intent: string } | undefined;
 
+    // V1 PROTOCOL: Unified Context Object
+    let currentPageType = "UNKNOWN";
+    let currentPurpose = "Exploración General";
+    let genericTextCount = 0;
+
     // V3 EXPERIMENTAL: Global state tracking
     const globalStateActions = new Set<string>();
     let requiresRescan = false;
@@ -322,7 +378,19 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             const elements = await smartWaitForElements(page, suiteId);
             const currentUrl = page.url();
             const pageTitle = await page.title().catch(() => 'Unknown');
-            if (elements.length === 0) break;
+
+            if (elements.length === 0) {
+                // V3.3: Don't break if we are likely in a loading state
+                const bodyText = await getBodyText(page);
+                const isLoading = bodyText.toLowerCase().match(/cargando|loading|wait...|esperando...|processing/);
+                if (isLoading && consecutiveWaits < 10) {
+                    Logger.info(`⏳ No hay elementos pero se detecta carga: "${isLoading[0]}". Esperando...`, suiteId);
+                    consecutiveWaits++;
+                    await sleep(5000);
+                    continue;
+                }
+                break;
+            }
 
             const stateHash = computeStateHash(currentUrl, elements.length, pageTitle, currentGlobalState);
 
@@ -353,7 +421,14 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     pageContext = `Página: ${analysis.page_type} | Objetivo: ${analysis.purpose}`;
                     strategy = analysis.strategy;
                     purpose = analysis.purpose;
-                    Logger.info(`🧠 [CARTÓGRAFO] ${pageContext} | Estrategia: ${strategy}`, suiteId);
+
+                    // V1 PROTOCOL: Store context for drift detection
+                    currentPageType = analysis.page_type || "UNKNOWN";
+                    currentPurpose = analysis.purpose || "Exploración General";
+                    genericTextCount = 0; // Reset count on new page scan
+
+                    const evidence = analysis.evidence ? ` | Evidencia: "${analysis.evidence}"` : "";
+                    Logger.info(`🧠 [CARTÓGRAFO] ${pageContext} | Estrategia: ${strategy}${evidence}`, suiteId);
 
                     // V5: Register journey state in Knowledge Graph
                     try {
@@ -410,7 +485,7 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
             // NEW: Capture scan start time to prevent self-matching in this cycle
             const scanStartTime = new Date().toISOString();
 
-            const untested: { element: UIElement; action: UIAction }[] = [];
+            const untested: { element: UIElement; action: UIAction; needsReclassification: boolean }[] = [];
             const actionIdsOnScreen = new Set<string>();
             const snapshotRows: any[] = []; // V3 Phase 3
 
@@ -420,6 +495,11 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                 const fingerprint = computeFingerprint(el, currentUrl);
                 Logger.debug(`[SCAN] fp=${fingerprint.substring(0, 8)} action=${action.id.substring(0, 8)}`, suiteId);
+
+                // V1 PROTOCOL: Context Drift Detection
+                const contextDrift = action.last_page_type !== currentPageType || action.last_purpose !== currentPurpose;
+                const isGeneric = action.semantic_type === 'GENERIC_TEXT';
+                if (isGeneric) genericTextCount++;
 
                 // V3 Phase 3: Accumulate Snapshot
                 if (CHAOS_V3) {
@@ -440,10 +520,13 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 const executedInDB = await hasActionBeenExecuted(suiteId, action.id, stateHash);
                 const isGlobalState = action.action_category === 'GLOBAL_STATE';
 
+                // V1 PROTOCOL: Force re-classification if Context Drift detected or Confidence is low
+                const needsReclassification = contextDrift || action.confidence_score < CONFIDENCE_THRESHOLD || (isGeneric && genericTextCount > MAX_GENERIC_TEXT_PER_PAGE);
+
                 if (!executedInRuntime && !executedInDB) {
-                    untested.push({ element: el, action });
+                    untested.push({ element: el, action, needsReclassification });
                 } else if (isGlobalState && CHAOS_V3) {
-                    if (!executedInRuntime) untested.push({ element: el, action });
+                    if (!executedInRuntime) untested.push({ element: el, action, needsReclassification });
                 } else {
                     if (executedInDB) executedInThisRun.add(key);
                 }
@@ -495,10 +578,11 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                     // Take top 8 candidates from heuristic baseline
                     const candidates = sortedUntested.slice(0, 8);
 
-                    // Semantic Cache: Skip reasoning for well-known actions (executed > 5 times historically)
-                    const needsReasoning = candidates.filter(c => c.action.execution_count < 5);
+                    // Semantic Cache: Skip reasoning for well-known actions (validated confidence >= 0.9)
+                    // V1 PROTOCOL: Confidence Threshold check
+                    const needsReasoning = candidates.filter(c => c.action.confidence_score < CONFIDENCE_THRESHOLD || c.needsReclassification);
 
-                    if (needsReasoning.length > 1) {
+                    if (needsReasoning.length > 0) {
                         llmCalls++; // One batch call replaces multiple heuristic checks
                         trackAICall(candidates.length * 150, 200); // Estimate token usage for ranking
                         const rankResult = await batchRankActions(llmCtx, candidates.map(c => ({
@@ -513,9 +597,30 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                             if (rankResult.suggested_payload) {
                                 payload = rankResult.suggested_payload;
                             }
+
+                            // V1 PROTOCOL: Persistence of classification (CHAOS ONLY)
+                            if (selected && rankResult.semantic_type) {
+                                const { action } = selected;
+
+                                // Concurrency Lock Check
+                                const { data: currentAction } = await supabase.from('ui_actions').select('locked_by_suite').eq('id', action.id).single();
+                                if (!currentAction?.locked_by_suite || currentAction.locked_by_suite === suiteId) {
+                                    await supabase.from('ui_actions').update({
+                                        semantic_type: rankResult.semantic_type,
+                                        confidence_score: rankResult.confidence || 0.7, // Tentative if not specified
+                                        last_page_type: currentPageType,
+                                        last_purpose: currentPurpose,
+                                        locked_by_suite: suiteId // Soft lock
+                                    }).eq('id', action.id);
+
+                                    action.semantic_type = rankResult.semantic_type;
+                                    action.confidence_score = rankResult.confidence || 0.7;
+                                }
+                            }
                         }
-                    } else if (candidates.length > 0 && needsReasoning.length <= 1) {
-                        thought = '⚡ Caché Semántico (Acción Conocida)';
+                    } else if (candidates.length > 0) {
+                        thought = `⚡ Caché Semántico (${candidates[0].action.semantic_type})`;
+                        selected = candidates[0];
                     }
                 }
 
@@ -527,10 +632,21 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 const { element, action } = selected;
                 const actionType = getActionType(element);
 
-                // V3.2: Use sanitized payload generator
-                // V3.2: Use sanitized payload generator (fallback if AI didn't provide one)
-                if (actionType === 'type' && !payload) {
-                    payload = generatePayload(element, credentials);
+                // V1 PROTOCOL: Use SemanticPayloadGenerator
+                if (actionType === 'type') {
+                    const context: ContextEnvelope = {
+                        page_type: currentPageType,
+                        purpose: currentPurpose,
+                        journey_state: currentJourneyStateId,
+                        semantic_type: action.semantic_type,
+                        element_hint: element.hint
+                    };
+                    payload = SemanticPayloadGenerator.generate(element, context, credentials);
+
+                    // Specific override if AI suggested one and we trust it
+                    if (shouldUseLLM && selected.action.confidence_score > 0.5 && payload.includes('Valor de Prueba')) {
+                        // Keep AI payload if ours is too generic
+                    }
                 }
 
                 const stepTitle = action.canonical_name;
@@ -538,112 +654,139 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
 
                 Logger.thought(`Decided: ${stepTitle} (${intent}) | Reason: ${thought}`, suiteId);
 
+                // --- 5. Execution & Adaptive Waiting ---
+                Logger.info(`🚀 Ejecutando: ${stepTitle} (${actionType})`, suiteId);
+
+                const stateBefore = await captureState(page);
+                let validation: any = { passed: false };
+                let attempts = 0;
                 let executionStatus: 'success' | 'warning' | 'failed' = 'failed';
 
-                try {
-                    // V3 Phase 2: Capture state before action
-                    const beforeState = await captureState(page);
-
-                    if (actionType === 'type') {
-                        Logger.action(`ESCRIBIR "${payload}" en ${element.selector}`, suiteId);
-                        await page.fill(element.selector, payload);
-                    } else {
-                        Logger.action(`CLIC en ${element.selector}`, suiteId);
-                        await page.click(element.selector, { timeout: 8000 });
-                    }
-
-                    actionsExecuted++;
-                    // TURBO: Adaptive wait — resolves when DOM settles (typically ~100-350ms vs fixed 1500ms)
-                    await waitForUISettled(page, 350, 3000);
-                    const stateActionKey = `${action.id}::${stateHash}`;
-                    executedInThisRun.add(stateActionKey);
-
-                    // V4.4: Track recent action names for anti-repetition
-                    recentActionNames.push(action.canonical_name);
-                    if (recentActionNames.length > 8) recentActionNames.shift(); // Keep last 8
-
-                    // V5: Stage last action for Journey Graph transition recording
-                    lastJourneyAction = {
-                        id: action.id,
-                        intent: action.metadata?.semantic_intent || action.canonical_name
-                    };
-
-                    const validation = await validateActionEffect(page, action, intent as SemanticIntent, beforeState);
-                    const stepStatus = validation.passed ? 'success' : 'warning';
-                    executionStatus = stepStatus; // Track for termination logic
-                    const evidenceMsg = validation.evidence || thought;
-
-                    if (validation.passed) {
-                        Logger.success(`Action validated: ${evidenceMsg}`, suiteId);
-                    } else {
-                        Logger.warn(`Action validation warning: ${evidenceMsg}`, suiteId);
-                    }
-
-                    // V3.2 CRITICAL: Regenerate canonical_name ALWAYS if different
-                    const regeneratedName = generateCanonicalName(element, actionType);
-                    if (regeneratedName !== action.canonical_name) {
-                        Logger.debug(`[RENAME] ${action.canonical_name} → ${regeneratedName}`, suiteId);
-                        await supabase.from('ui_actions')
-                            .update({ canonical_name: regeneratedName })
-                            .eq('id', action.id);
-                        action.canonical_name = regeneratedName; // Update local reference
-                    }
-
-                    const stepId = await recordStep(suiteId, page, stepTitle, stepStatus, evidenceMsg, {
-                        selector: element.selector, xpath: element.xpath, actionType, payload: actionType === 'type' ? '***' : undefined, actionId: action.id, validationResult: validation
-                    }, lastStepId);
-
-                    if (stepId) {
-                        lastStepId = stepId;
-                        await recordActionExecution(suiteId, action.id, stateHash, stepId);
-                    }
-
-                    // V3 EXPERIMENTAL: Global State & Depth Detection
-                    if (CHAOS_V3) {
-                        // Phase 3: Mark Discovered Element as Executed
-                        await supabase.from('discovered_elements_snapshot')
-                            .update({ was_executed: true })
-                            .match({ suite_id: suiteId, state_hash: stateHash, action_id: action.id });
-
-                        // Track global state actions
-                        if (action.action_category === 'GLOBAL_STATE') {
-                            globalStateActions.add(action.id);
-                            Logger.debug(`[V3] Global state action detected: ${action.canonical_name}`, suiteId);
+                while (attempts <= MAX_REGENERATION_ATTEMPTS) {
+                    try {
+                        if (actionType === 'type') {
+                            await page.fill(element.selector, payload || '');
+                            if (element.tag === 'textarea' || payload?.includes('\n')) {
+                                await page.keyboard.press('Control+Enter');
+                            } else {
+                                await page.keyboard.press('Enter');
+                            }
+                        } else {
+                            await page.click(element.selector);
                         }
+
+                        // Adaptive wait after action
+                        await smartWaitForElements(page, suiteId);
+
+                        // --- 6. Semantic Validation (V3) ---
+                        const intent = (action.metadata?.semantic_intent || inferIntent(element)) as SemanticIntent;
+                        validation = await validateActionEffect(page, action, intent, stateBefore);
+
+                        if (validation.passed) {
+                            Logger.info(`✅ Validación Exitosa: ${validation.evidence}`, suiteId);
+                            executionStatus = 'success';
+
+                            // V1 PROTOCOL: Boost confidence on success
+                            if (action.confidence_score < 0.95 && action.locked_by_suite === suiteId) {
+                                await supabase.from('ui_actions').update({
+                                    confidence_score: Math.min(1.0, action.confidence_score + 0.05),
+                                    last_page_type: currentPageType,
+                                    last_purpose: currentPurpose
+                                }).eq('id', action.id);
+                            }
+                            break;
+                        } else {
+                            attempts++;
+                            if (attempts <= MAX_REGENERATION_ATTEMPTS && actionType === 'type') {
+                                Logger.warn(`⚠️ Validación fallida: ${validation.evidence}. Re-generando payload (Intento ${attempts}/${MAX_REGENERATION_ATTEMPTS})...`, suiteId);
+                                const retryContext: ContextEnvelope = {
+                                    page_type: currentPageType,
+                                    purpose: currentPurpose,
+                                    semantic_type: action.semantic_type,
+                                    element_hint: `${element.hint} | ERROR PREVIO: ${validation.evidence}`
+                                };
+                                payload = SemanticPayloadGenerator.generate(element, retryContext, credentials);
+                            } else {
+                                Logger.error(`❌ Validación fallida después de ${attempts} intentos: ${validation.evidence}`, suiteId);
+                                executionStatus = 'warning';
+
+                                // V1 PROTOCOL: DRIFT CONTROL - Penalize on failure
+                                if (action.confidence_score > 0.4 && action.locked_by_suite === suiteId) {
+                                    await supabase.from('ui_actions').update({
+                                        confidence_score: Math.max(0, action.confidence_score - 0.2)
+                                    }).eq('id', action.id);
+                                }
+                                break;
+                            }
+                        }
+                    } catch (e: any) {
+                        Logger.error(`Fallo en ejecución: ${e.message}`, suiteId);
+                        validation = { passed: false, evidence: e.message };
+                        executionStatus = 'failed';
+                        break;
                     }
-
-                    // TURBO: Adaptive settle — replaces fixed sleep(500)
-                    await waitForUISettled(page, 200, 1500);
-
-                    const afterUrl = page.url();
-                    const urlChanged = beforeState.url !== afterUrl;
-                    const modalOpened = await page.locator('[role="dialog"], .modal, [aria-modal="true"]').count().catch(() => 0) > 0;
-
-                    // V4.3: If action triggered a large DOM change (+10 elements), wait for async results.
-                    // This handles cases like "Iniciar Auditoría" which trigger async data loads.
-                    const currentElementCount = await page.locator('*').count().catch(() => 0);
-                    const domDelta = Math.abs(currentElementCount - beforeState.elementCount);
-                    if (domDelta >= 10 && !urlChanged) {
-                        Logger.info(`⏳ [ASYNC WAIT] DOM cambió ${domDelta > 0 ? '+' : ''}${domDelta} elementos. Esperando carga async...`, suiteId);
-                        // TURBO: Adaptive wait replaces fixed sleep(4000)
-                        await waitForUISettled(page, 500, 5000);
-                    }
-
-                    if (urlChanged || modalOpened) {
-                        requiresRescan = true;
-                        Logger.info(`Cambio de profundidad detectado (URL/Modal). Forzando reescaneo.`, suiteId);
-                    }
-
-                    // Reset stability since we took action
-                    consecutiveStableStates = 0;
-
-                } catch (err: any) {
-                    await Logger.log(suiteId, `⚠️ Fallo en acción: ${err.message}`, 'warning');
-                    // Mark as executed to prevent infinite loop on broken element
-                    executedInThisRun.add(`${action.id}::${stateHash}`);
-                    await recordActionExecution(suiteId, action.id, stateHash);
-                    executionStatus = 'failed';
                 }
+
+                actionsExecuted++;
+                recentActionNames.push(action.canonical_name);
+                if (recentActionNames.length > 8) recentActionNames.shift();
+
+                // V5: Stage last action for Journey Graph
+                lastJourneyAction = {
+                    id: action.id,
+                    intent: action.metadata?.semantic_intent || action.canonical_name
+                };
+
+                const stepStatus = validation.passed ? 'success' : 'warning';
+                const evidenceMsg = validation.evidence || thought;
+
+                // V1 Protocol: Record the step
+                const stepId = await recordStep(suiteId, page, stepTitle, stepStatus, evidenceMsg, thought, evidenceMsg, {
+                    selector: element.selector, xpath: element.xpath, actionType, payload: actionType === 'type' ? '***' : undefined, actionId: action.id, validationResult: validation
+                }, lastStepId);
+
+                if (stepId) {
+                    lastStepId = stepId;
+                    await recordActionExecution(suiteId, action.id, stateHash, stepId);
+                }
+
+                // Update canonical name if it changed
+                const regeneratedName = generateCanonicalName(element, actionType);
+                if (regeneratedName !== action.canonical_name) {
+                    await supabase.from('ui_actions').update({ canonical_name: regeneratedName }).eq('id', action.id);
+                    action.canonical_name = regeneratedName;
+                }
+
+                // V3 Phase 3: Update element snapshot
+                if (CHAOS_V3) {
+                    await supabase.from('discovered_elements_snapshot')
+                        .update({ was_executed: true })
+                        .match({ suite_id: suiteId, state_hash: stateHash, action_id: action.id });
+
+                    if (action.action_category === 'GLOBAL_STATE') {
+                        globalStateActions.add(action.id);
+                    }
+                }
+
+                await waitForUISettled(page, 200, 1500);
+
+                const afterUrl = page.url();
+                const urlChanged = stateBefore.url !== afterUrl;
+                const modalOpened = await page.locator('[role="dialog"], .modal, [aria-modal="true"]').count().catch(() => 0) > 0;
+
+                const currentElementCount = await page.locator('*').count().catch(() => 0);
+                const domDelta = Math.abs(currentElementCount - stateBefore.elementCount);
+                if (domDelta >= 10 && !urlChanged) {
+                    await waitForUISettled(page, 500, 5000);
+                }
+
+                if (urlChanged || modalOpened) {
+                    requiresRescan = true;
+                    Logger.info(`Cambio de profundidad detectado (URL/Modal). Forzando reescaneo.`, suiteId);
+                }
+
+                consecutiveStableStates = 0;
+                executedInThisRun.add(`${action.id}::${stateHash}`);
 
                 // PHASE 4.2: Smart Termination (Diminishing Returns)
                 if (executionStatus === 'success' || (CHAOS_V3 && requiresRescan)) {
@@ -661,12 +804,22 @@ export async function runChaosAgent(jobId: string, url: string, suiteId: string,
                 continue;
             }
 
-            // 2. COVERAGE COMPLETE - Check for Navigation or Termination
+            // 2. COVERAGE COMPLETE - Check for Scrolling or Termination
+            const canScroll = await isPageScrollable(page);
+            const bottom = await isAtBottom(page);
+
+            if (canScroll && !bottom) {
+                await Logger.log(suiteId, `📜 Pantalla cubierta pero hay más contenido. Scrolleando...`, 'info');
+                await scrollPage(page, 'down');
+                await recordStep(suiteId, page, 'Desplazamiento vertical', 'success', 'Desplazamiento táctico para cobertura total.', 'Espero descubrir nuevos elementos interactivos al final de la página.', 'Desplazamiento vertical exitoso. Nueva área de la UI expuesta.', undefined, lastStepId);
+                continue; // Re-scan after scroll
+            }
+
             await Logger.log(suiteId, `✅ Pantalla cubierta al 100%. Evaluando navegación...`, 'success');
 
             if (consecutiveStableStates >= STABILITY_THRESHOLD) {
                 // We are 100% covered and have been stable for N cycles => TRAPPED or DONE
-                await recordStep(suiteId, page, '🏁 Ejecución Finalizada', 'success', `Cobertura completa alcanzada: ${actionsExecuted} pasos. Toda la UI accesible ha sido validada.`, undefined, lastStepId);
+                await recordStep(suiteId, page, '🏁 Ejecución Finalizada', 'success', 'Cobertura completa alcanzada.', 'El agente debe validar toda la UI accesible.', `Misión cumplida. ${actionsExecuted} pasos ejecutados con éxito.`, undefined, lastStepId);
                 break;
             }
 

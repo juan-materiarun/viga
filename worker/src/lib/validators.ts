@@ -203,7 +203,7 @@ async function validateGeneric(page: Page, before: StateSnapshot): Promise<Valid
     // In V3.2 strict mode, this triggers LLM re-evaluation or warning.
     return {
         passed: false,
-        evidence: 'No detectable state change (Zero-Entropy Action). Pending Neural Analysis.',
+        evidence: 'No se detectó un cambio significativo en la interfaz o URL después de esta acción.',
         wasSkipped: false
     };
 }

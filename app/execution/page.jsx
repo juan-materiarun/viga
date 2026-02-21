@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, Suspense } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
     X, CheckCircle2, XCircle, Clock, Image as ImageIcon, Code, Globe, Hash, Copy,
@@ -65,6 +66,7 @@ function ExecutionContent() {
         const channels = [
             supabase.channel(`steps-${suiteId}`).on('postgres_changes', { event: '*', schema: 'public', table: 'test_steps', filter: `suite_id=eq.${suiteId}` },
                 payload => {
+                    console.log('Realtime Step update:', payload);
                     if (payload.eventType === 'INSERT') setSteps(prev => [...prev, payload.new]);
                     if (payload.eventType === 'UPDATE') setSteps(prev => prev.map(s => s.id === payload.new.id ? payload.new : s));
                 }
@@ -80,8 +82,19 @@ function ExecutionContent() {
             ).subscribe()
         ];
 
+        // POLLING FALLBACK (Every 5 seconds if running)
+        const pollInterval = setInterval(async () => {
+            if (suite?.status === 'running') {
+                const { data } = await supabase.from('test_steps').select('*').eq('suite_id', suiteId).order('created_at', { ascending: true });
+                if (data && data.length > steps.length) {
+                    setSteps(data);
+                }
+            }
+        }, 5000);
+
         return () => {
             channels.forEach(c => supabase.removeChannel(c));
+            clearInterval(pollInterval);
         };
     }, [suiteId]);
 
@@ -140,6 +153,22 @@ function ExecutionContent() {
                 </div>
 
                 <div className="flex items-center gap-3">
+                    <button
+                        onClick={() => {
+                            // Manual Refresh Trigger
+                            supabase.from('test_steps').select('*').eq('suite_id', suiteId).order('created_at', { ascending: true }).then(({ data }) => {
+                                if (data) setSteps(data);
+                            });
+                            supabase.from('test_suites').select('*').eq('id', suiteId).single().then(({ data }) => {
+                                if (data) setSuite(data);
+                            });
+                        }}
+                        className="p-2 rounded-xl hover:bg-[var(--bg-hover)] transition-all text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                        title="Refrescar Manualmente"
+                    >
+                        <RefreshCw size={18} />
+                    </button>
+
                     <div className="hidden md:flex items-center gap-2 px-4 py-1.5 rounded-full bg-[var(--bg-hover)] border border-[var(--border-color)]">
                         <Activity size={12} className="text-emerald-500" />
                         <span className="text-[10px] uppercase font-bold tracking-wider text-[var(--text-secondary)]">
@@ -207,35 +236,50 @@ function ExecutionContent() {
                         {/* Content */}
                         <div className="flex-1 overflow-y-auto scrollbar-thin p-3">
                             {activeTab === 'timeline' && (
-                                <div className="space-y-2">
-                                    {steps.map((step, idx) => (
-                                        <div
-                                            key={step.id}
-                                            onClick={() => setSelectedStep(step)}
-                                            className={`p-3 rounded-xl cursor-pointer transition-all border ${selectedStep?.id === step.id ? 'bg-[var(--accent-primary)]/10 border-[var(--accent-primary)]/20 shadow-sm' : 'bg-transparent border-transparent hover:bg-[var(--bg-hover)]'}`}
-                                        >
-                                            <div className="flex justify-between items-start mb-1.5">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="w-5 h-5 flex items-center justify-center rounded-full bg-[var(--bg-base)] text-[10px] font-mono text-[var(--text-muted)] border border-[var(--border-color)]">
-                                                        {idx + 1}
-                                                    </span>
-                                                    <span className={`text-[10px] font-bold uppercase ${step.status === 'failed' ? 'text-red-400' : 'text-[var(--text-secondary)]'}`}>
-                                                        {step.description && step.description.length < 50 ? step.description : (step.action_type || 'ACCIÓN')}
-                                                    </span>
+                                <div className="space-y-3">
+                                    <AnimatePresence initial={false}>
+                                        {steps.map((step, idx) => (
+                                            <motion.div
+                                                key={step.id}
+                                                initial={{ opacity: 0, x: -20, scale: 0.95 }}
+                                                animate={{ opacity: 1, x: 0, scale: 1 }}
+                                                transition={{ duration: 0.3, ease: 'easeOut' }}
+                                                onClick={() => setSelectedStep(step)}
+                                                className={`p-4 rounded-2xl cursor-pointer transition-all border group relative overflow-hidden backdrop-blur-sm ${selectedStep?.id === step.id ? 'bg-[var(--accent-primary)]/10 border-[var(--accent-primary)]/20 shadow-md ring-1 ring-[var(--accent-primary)]/20' : 'bg-[var(--bg-base)]/40 border-[var(--border-color)] hover:border-[var(--accent-primary)]/30 hover:bg-[var(--bg-hover)]'}`}
+                                            >
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className={`w-6 h-6 flex items-center justify-center rounded-lg text-[10px] font-bold border transition-colors ${selectedStep?.id === step.id ? 'bg-[var(--accent-primary)] text-white border-transparent' : 'bg-[var(--bg-base)] text-[var(--text-muted)] border-[var(--border-color)]'}`}>
+                                                            {idx + 1}
+                                                        </div>
+                                                        <span className={`text-[11px] font-bold tracking-tight uppercase ${step.status === 'failed' ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>
+                                                            {step.title || step.action_type || 'ACCIÓN'}
+                                                        </span>
+                                                    </div>
+                                                    <span className="text-[10px] text-[var(--text-muted)] font-mono opacity-60">{new Date(step.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
                                                 </div>
-                                                <span className="text-[10px] text-[var(--text-muted)]">{new Date(step.created_at).toLocaleTimeString()}</span>
-                                            </div>
-                                            {step.description && step.description.length >= 50 && (
-                                                <p className="text-xs text-[var(--text-secondary)] leading-relaxed pl-7 line-clamp-2">
-                                                    {step.description}
-                                                </p>
-                                            )}
-                                        </div>
-                                    ))}
+                                                {step.description && (
+                                                    <p className="text-xs text-[var(--text-secondary)] leading-relaxed pl-9 line-clamp-2 font-medium opacity-80">
+                                                        {step.description}
+                                                    </p>
+                                                )}
+                                                {selectedStep?.id === step.id && (
+                                                    <motion.div
+                                                        layoutId="active-indicator"
+                                                        className="absolute left-0 top-0 bottom-0 w-1 bg-[var(--accent-primary)]"
+                                                    />
+                                                )}
+                                            </motion.div>
+                                        ))}
+                                    </AnimatePresence>
                                     {steps.length === 0 && (
-                                        <div className="h-full flex flex-col items-center justify-center text-[var(--text-muted)] opacity-50">
-                                            <Activity size={32} className="mb-2 animate-pulse" />
-                                            <span className="text-xs uppercase tracking-widest">Esperando actividad...</span>
+                                        <div className="h-[400px] flex flex-col items-center justify-center text-[var(--text-muted)] group">
+                                            <div className="p-10 rounded-full bg-[var(--bg-base)]/50 border border-[var(--border-color)] mb-6 group-hover:scale-110 transition-transform duration-700 relative">
+                                                <Activity size={32} className="text-[var(--accent-primary)] animate-pulse" />
+                                                <div className="absolute inset-x-0 -bottom-1 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/50 to-transparent" />
+                                            </div>
+                                            <span className="text-[10px] uppercase font-bold tracking-[0.2em] opacity-40">Misión Iniciada</span>
+                                            <span className="text-xs mt-2 opacity-30">Escaneando ecosistema...</span>
                                         </div>
                                     )}
                                 </div>
@@ -291,7 +335,7 @@ function ExecutionContent() {
 
                 {/* RIGHT PANEL: CENTER STAGE (60%) */}
                 <div className="col-span-6 flex flex-col h-full gap-4">
-                    <div className="flex-1 rounded-2xl overflow-hidden shadow-lg relative bg-[#000] ring-1 ring-[#000]/10">
+                    <div className="flex-1 rounded-2xl overflow-hidden shadow-lg relative bg-transparent ring-1 ring-[#000]/5">
                         <ExecutionReplay
                             steps={steps}
                             activeIndex={steps.findIndex(s => s.id === selectedStep?.id)}
@@ -322,10 +366,10 @@ function ExecutionContent() {
 
                         {selectedStep ? (
                             <div className="space-y-6">
-                                <div>
-                                    <label className="text-[10px] text-[var(--text-muted)] block mb-1.5 uppercase font-medium">Razonamiento AI</label>
-                                    <p className="text-sm text-[var(--text-primary)] leading-relaxed font-light">
-                                        {selectedStep.observation || selectedStep.description}
+                                <div className="p-4 rounded-xl bg-[var(--bg-base)] border border-[var(--border-color)]">
+                                    <label className="text-[10px] text-[var(--accent-primary)] block mb-2 uppercase font-bold tracking-widest">🧠 Razonamiento del Agente</label>
+                                    <p className="text-sm text-[var(--text-primary)] leading-relaxed font-medium">
+                                        {selectedStep.expected_result || selectedStep.description}
                                     </p>
                                 </div>
 
@@ -359,16 +403,19 @@ function ExecutionContent() {
                                 )}
 
                                 <div className="p-3 rounded-xl bg-orange-500/5 border border-orange-500/10">
-                                    <label className="text-[10px] text-orange-400/80 block mb-1 uppercase font-bold">Expectativa</label>
+                                    <label className="text-[10px] text-orange-400/80 block mb-1 uppercase font-bold">Observación</label>
                                     <p className="text-xs text-[var(--text-secondary)]">
-                                        {selectedStep.expected_result || 'Sin criterio de éxito definido.'}
+                                        {selectedStep.description || 'Sin detalles adicionales.'}
                                     </p>
                                 </div>
                             </div>
                         ) : (
-                            <div className="h-full flex flex-col items-center justify-center text-[var(--text-muted)]">
-                                <Activity size={24} className="mb-2 opacity-50" />
-                                <span className="text-xs">Selecciona un paso</span>
+                            <div className="h-full flex flex-col items-center justify-center text-[var(--text-muted)] animate-in fade-in duration-500">
+                                <div className="w-12 h-12 rounded-2xl bg-[var(--bg-base)] border border-[var(--border-color)] flex items-center justify-center mb-4 opacity-20">
+                                    <Settings size={24} />
+                                </div>
+                                <span className="text-[10px] uppercase font-bold tracking-[0.2em] opacity-40">Detalles de Acción</span>
+                                <span className="text-[10px] mt-1 opacity-20">Selecciona un elemento para analizar</span>
                             </div>
                         )}
                     </div>

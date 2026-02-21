@@ -46,6 +46,11 @@ export interface UIAction {
         [key: string]: any;
     };
     action_category: ActionCategory;
+    semantic_type: string | null;
+    confidence_score: number;
+    last_page_type: string | null;
+    last_purpose: string | null;
+    locked_by_suite: string | null;
 }
 
 // ─── In-memory scan cache ─────────────────────────────────────────────────
@@ -163,7 +168,9 @@ export function findOrCreateActionCached(
         ],
         execution_count: 0,
         metadata: { semantic_intent: inferIntent(element) },
-        action_category: inferActionCategory(element, inferIntent(element))
+        action_category: inferActionCategory(element, inferIntent(element)),
+        semantic_type: null,
+        confidence_score: 0
     };
 
     cache.pending.push(newAction);

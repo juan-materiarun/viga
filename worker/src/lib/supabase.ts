@@ -5,6 +5,9 @@ export const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+const WORKER_ID = `worker-${Math.random().toString(36).slice(2, 6)}`;
+console.log(`[SUPABASE] 🆔 Worker ID assigned: ${WORKER_ID}`);
+
 export interface Job {
     id: string;
     suite_id: string;
@@ -23,6 +26,7 @@ export interface Job {
     started_at?: string;
     completed_at?: string;
     updated_at: string;
+    worker_id?: string;
 }
 
 export async function pollPendingJobs(): Promise<Job[]> {
@@ -52,12 +56,14 @@ export async function pollPendingJobs(): Promise<Job[]> {
 }
 
 export async function claimJob(jobId: string): Promise<Job | null> {
+    // Attempt 1: With worker_id (Advanced Schema)
     const { data, error } = await supabase
         .from('jobs')
         .update({
             status: 'running',
             started_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
+            worker_id: WORKER_ID
         })
         .eq('id', jobId)
         .eq('status', 'pending') // Optimistic Lock: Only update if still pending
@@ -65,10 +71,37 @@ export async function claimJob(jobId: string): Promise<Job | null> {
         .single();
 
     if (error) {
-        // If error is "PGRST116" (JSON object requested ... result) it means 0 rows updated
-        // which implies race condition lost.
+        // If column missing (PGRST204), fallback to basic schema
+        if (error.code === 'PGRST204' || error.message?.includes('worker_id')) {
+            console.warn(`[SUPABASE] ⚠️ 'worker_id' column not found or invalid. Falling back to basic job claim.`);
+            const { data: fallbackData, error: fallbackError } = await supabase
+                .from('jobs')
+                .update({
+                    status: 'running',
+                    started_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', jobId)
+                .eq('status', 'pending')
+                .select()
+                .single();
+
+            if (fallbackError) {
+                if (fallbackError.code !== 'PGRST116') {
+                    console.error(`[SUPABASE] ❌ Error claiming job ${jobId} (fallback):`, fallbackError);
+                } else {
+                    console.warn(`[SUPABASE] 🏎️ Race Condition: Job ${jobId} already taken by another instance (fallback).`);
+                }
+                return null;
+            }
+            return fallbackData;
+        }
+
+        // Original error handling for non-PGRST204 errors
         if (error.code !== 'PGRST116') {
-            console.error('[SUPABASE] Error claiming job:', error);
+            console.error(`[SUPABASE] ❌ Error claiming job ${jobId}:`, error);
+        } else {
+            console.warn(`[SUPABASE] 🏎️ Race Condition: Job ${jobId} already taken by another instance.`);
         }
         return null;
     }

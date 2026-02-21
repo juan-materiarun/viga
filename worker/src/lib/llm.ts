@@ -182,7 +182,7 @@ export async function batchRankActions(
     goal?: string,
     purpose?: string,
     recentHistory?: string[] // V4.4: Last N action names taken, to avoid repetition
-): Promise<{ selected_id: string; reason: string; suggested_payload?: string } | null> {
+): Promise<{ selected_id: string; reason: string; suggested_payload?: string; semantic_type?: string; confidence?: number } | null> {
     if (candidates.length === 0) return null;
     if (candidates.length === 1) return { selected_id: candidates[0].id, reason: 'Only candidate available' };
 
@@ -199,23 +199,30 @@ export async function batchRankActions(
 
     ESTRATEGIA:
     1. ALINEAR: Todas las acciones deben avanzar hacia el "Objetivo Principal".
-    2. BARRER: Si hay inputs, llénalos con datos COHERENTES al objetivo.
-    3. NAVEGAR: Solo sal de la página si el objetivo actual está cumplido.
+    2. BARRER: Si hay inputs, llénalos con datos COHERENTES al objetivo. NO uses "example.com" ni valores falsos genéricos.
+    3. NAVEGAR: Explora TODOS los botones disponibles (idiomas, temas, configuraciones) antes de cambiar de página.
     4. NO REPETIR: Prioriza candidatos que NO figuran en el HISTORIAL RECIENTE.
+    5. RAZONAR: Para cada acción, debes explicar QUÉ crees que hace el botón y QUÉ esperas que ocurra.
 
     INSTRUCCIONES CLAVE PARA INPUTS:
     - DETECTA EL CONTEXTO del campo (por nombre, etiqueta, placeholder).
-    - SI el campo menciona HTML, CSS, JS, código, snippet o "pega" → generated_payload debe ser un SNIPPET de código HTML real.
+    - CLASIFICA EL TIPO SEMÁNTICO (semantic_type): AUDIT_TARGET_URL, CODE_EDITOR, EMAIL_LOGIN, PASSWORD_LOGIN, SEARCH_QUERY, etc.
+    - SI el campo menciona HTML, CSS, JS, código, snippet o "pega" → generated_payload debe ser un SNIPPET de código HTML/JS real y funcional.
     - SI es "URL" o "Website": Usar "https://viga.dev".
-    - SI es "Email": Usar email válido.
-    - SI es "Búsqueda": Usar términos relevantes.
     
-    Selecciona el MEJOR paso siguiente que NO esté en el historial reciente.`;
+    Selecciona el MEJOR paso siguiente.`;
 
     const user = `Candidatos:
 ${candidates.map(c => `- [${c.id}] (${c.category}) ${c.name}`).join('\n')}
 
-Formato de Respuesta JSON: { "selected_id": "uuid", "reason": "proceso de pensamiento en español", "suggested_payload": "valor para input (opcional)" }`;
+Formato de Respuesta JSON: 
+{ 
+  "selected_id": "uuid", 
+  "reason": "Pienso que este elemento sirve para [función detectada] y espero que al interactuar ocurra [resultado esperado]", 
+  "suggested_payload": "valor real y coherente",
+  "semantic_type": "AUDIT_TARGET_URL | CODE_EDITOR | ...",
+  "confidence": 0.95
+}`;
 
     // TURBO: batchRankActions is complex multi-step reasoning → always use smart (70B) model
     const res = await callGroqJSON(ctx, system, user, 5, 'llama-3.3-70b-versatile');
@@ -236,25 +243,25 @@ export async function analyzePageContext(
 
     URL: ${url}
     Título: ${title}
-    URL: ${url}
-    Título: ${title}
     Contexto (Accessibility Tree JSON o Texto):
     ${contextSummary}
 
     INSTRUCCIONES CLAVE:
-    1. Si ves texto como "Loading", "Cargando", "Processing" -> Tu estrategia debe ser "ESPERAR".
-    2. Si ves errores -> Tu estrategia debe ser "REPORTAR_ERROR".
-    3. Si es un formulario -> Tu estrategia es "LLENAR_DATOS".
+    1. Estrategia "ESPERAR" SOLO si hay un SPINNER o OVERLAY de carga que bloquee TODA la pantalla, o si la página está literalmente en blanco con un mensaje de "Cargando".
+    2. Si ves botones, inputs o enlaces -> La estrategia debe ser "EXPLORAR" o "LLENAR_DATOS", incluso si hay palabras como "Auditando" en el texto decorativo.
+    3. NO te dejes engañar por landing pages que describen procesos (ej: "Estamos auditando el mundo"). Si hay una caja de texto para ingresar una URL, la página NO está cargando, está LISTA.
+    4. Identifica claramente como MARKETING_LANDING si es la página inicial con un CTA.
 
     ANALIZA Y RESPONDE EN FORMATO JSON:
-    1. "page_type": Tipo de página (LOGIN, DASHBOARD, LOADING_STATE, ERROR_PAGE, etc).
+    1. "page_type": Tipo de página (LOGIN, DASHBOARD, LOADING_STATE, AUDIT_PROGRESS, ERROR_PAGE, etc).
     2. "purpose": Breve descripción en ESPAÑOL.
     3. "strategy": Estrategia recomendada.
-
-    Formato JSON: { "page_type": "string", "purpose": "string", "strategy": "string" }`;
+    4. "evidence": El fragmento de texto o indicador específico del contexto que justifica esta clasificación.
+    
+    Formato JSON: { "page_type": "string", "purpose": "string", "strategy": "string", "evidence": "string" }`;
 
     const user = "Analiza el estado actual de la página.";
 
-    // TURBO: page context analysis is pattern-matching, not reasoning → use fast 8B model
-    return await callGroqJSON(ctx, system, user, 5, 'llama-3.1-8b-instant') || { page_type: 'DESCONOCIDO', purpose: 'Explorar', strategy: 'Exploración genérica' };
+    // TURBO: page context analysis requires high-precision judgment to avoid false "WAIT" states
+    return await callGroqJSON(ctx, system, user, 5, 'llama-3.3-70b-versatile') || { page_type: 'DESCONOCIDO', purpose: 'Explorar', strategy: 'Exploración genérica' };
 }

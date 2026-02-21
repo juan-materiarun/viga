@@ -101,13 +101,13 @@ async function workerLoop() {
                         break;
                     }
 
-                    await sleep(Math.random() * 2000); // Small jitter
+                    await sleep(Math.random() * 500); // Small jitter (reduced from 2000ms)
 
                     // Optimistic Locking Claim
                     const claimedJob = await claimJob(job.id);
 
                     if (!claimedJob) {
-                        Logger.warn(`⚠️ Job ${job.id} was already claimed by another worker. Skipping.`);
+                        Logger.warn(`⚠️ Job ${job.id} was already claimed or is no longer pending. Si ves esto seguido, podrías tener otro worker ejecutándose en segundo plano.`);
                         continue;
                     }
 

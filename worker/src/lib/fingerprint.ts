@@ -225,18 +225,37 @@ function normalizeText(text: string): string {
 export function generateCanonicalName(element: UIElement, actionType: 'click' | 'type', payload?: string): string {
     const rawLabel = extractBestLabel(element);
     const label = sanitizeLabel(rawLabel);
+    const intent = inferIntent(element);
 
     if (actionType === 'type') {
-        const fieldName = label || element.attributes?.name || 'Campo';
-        // Hide sensitive payload in name if needed, but for now show it for clarity
-        const value = payload ? `"${payload}"` : '...';
-        return `Escribir ${value} en "${fieldName}"`;
+        const fieldName = label || element.attributes?.name || 'campo';
+        return `Ingresar datos en "${fieldName}"`;
     }
 
-    if (label) return `Clic en "${label}"`;
+    if (intent === 'NAVIGATION') {
+        return `Navegar a "${label || 'enlace'}"`;
+    }
+
+    if (intent === 'SUBMIT') {
+        return `Confirmar acción "${label || 'Enviar'}"`;
+    }
+
+    if (intent === 'TOGGLE') {
+        return `Alternar estado de "${label || 'interruptor'}"`;
+    }
+
+    if (intent === 'DOWNLOAD') {
+        return `Descargar "${label || 'archivo'}"`;
+    }
+
+    if (intent === 'EXPORT') {
+        return `Exportar "${label || 'datos'}"`;
+    }
+
+    if (label) return `Presionar "${label}"`;
 
     const role = element.attributes?.role || element.tag;
-    return `Clic en <${role}>`;
+    return `Interactuar con <${role}>`;
 }
 
 /**

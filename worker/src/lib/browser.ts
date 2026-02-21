@@ -113,7 +113,11 @@ export async function getActiveElements(page: any): Promise<UIElement[]> {
             '[role="button"]:not([disabled])',
             '[role="link"]:not([disabled])',
             'select:not([disabled])',
-            '[onclick]:not([disabled])'
+            '[onclick]:not([disabled])',
+            '[aria-haspopup]:not([disabled])',
+            '[aria-expanded]:not([disabled])',
+            '.clickable',
+            '.btn'
         ];
 
         // Batch collect all elements
@@ -224,4 +228,34 @@ export async function getAccessibilityTree(page: any): Promise<any> {
         console.error('Failed to get accessibility tree:', e);
         return null;
     }
+}
+
+/**
+ * Scroll the page in a given direction.
+ */
+export async function scrollPage(page: any, direction: 'down' | 'up' = 'down') {
+    await page.evaluate((dir: string) => {
+        const amount = dir === 'down' ? window.innerHeight * 0.7 : -window.innerHeight * 0.7;
+        window.scrollBy({ top: amount, behavior: 'smooth' });
+    }, direction);
+    // Wait for smooth scroll to finish and elements to potentially load
+    await new Promise(r => setTimeout(r, 1000));
+}
+
+/**
+ * Check if the page is at the bottom.
+ */
+export async function isAtBottom(page: any): Promise<boolean> {
+    return await page.evaluate(() => {
+        return (window.innerHeight + window.scrollY) >= (document.documentElement.scrollHeight - 50);
+    });
+}
+
+/**
+ * Check if the page is scrollable.
+ */
+export async function isPageScrollable(page: any): Promise<boolean> {
+    return await page.evaluate(() => {
+        return document.documentElement.scrollHeight > window.innerHeight + 100;
+    });
 }
